@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Study Assistant - RAGTutor Frontend</title>
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- FontAwesome for Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <header class="app-header">
+        <div class="header-logo">
+            <i class="fa-solid fa-graduation-cap"></i>
+            <span>AI Study Assistant <span class="badge-mock">Mock Mode</span></span>
+        </div>
+        <div class="header-actions">
+            <span class="streak-badge"><i class="fa-solid fa-fire"></i> 3 Ngày liên tiếp</span>
+            <span class="xp-badge"><i class="fa-solid fa-star"></i> 350 XP</span>
+        </div>
+    </header>
+
+    <div class="app-container">
+        <!-- 1. Sidebar bên trái nhất: Nạp tài liệu & Danh sách file -->
+        <aside class="sidebar" id="app-sidebar">
+            <div class="sidebar-header">
+                <h4><i class="fa-solid fa-folder-open"></i> Kho Tài Liệu</h4>
+            </div>
+            
+            <!-- Vùng Upload Tài liệu -->
+            <div class="upload-section">
+                <div class="upload-dropzone" id="upload-zone">
+                    <i class="fa-solid fa-cloud-arrow-up upload-icon"></i>
+                    <p>Kéo & thả file tại đây</p>
+                    <span>hoặc</span>
+                    <label for="file-input" class="btn-upload-label">Chọn File</label>
+                    <input type="file" id="file-input" accept=".pdf,.docx,.txt" multiple hidden>
+                </div>
+            </div>
+
+            <!-- Tiến trình xử lý (Simulated embedding progress) -->
+            <div class="processing-status hidden" id="processing-status">
+                <div class="status-info">
+                    <span id="status-filename">Tai-lieu.pdf</span>
+                    <span id="status-percent">45%</span>
+                </div>
+                <div class="progress-bar-container">
+                    <div class="progress-bar-fill" id="status-progress-fill"></div>
+                </div>
+                <p class="status-detail"><i class="fa-solid fa-spinner fa-spin"></i> Đang trích xuất & embed vector DB...</p>
+            </div>
+
+            <!-- Danh sách tài liệu đã nạp -->
+            <div class="document-list-section">
+                <h5>Tài liệu đã nạp (<span id="file-count">1</span>)</h5>
+                <ul class="file-list" id="file-list">
+                    <li class="file-item active" data-file-id="default-rag">
+                        <i class="fa-solid fa-file-pdf file-icon pdf"></i>
+                        <span class="file-name" title="Chuong_2_Kien_truc_RAG.pdf">Chuong_2_Kien_truc_RAG.pdf</span>
+                        <i class="fa-solid fa-circle-check success-icon"></i>
+                    </li>
+                </ul>
+            </div>
+        </aside>
+
+        <!-- Toggle Button for Sidebar Collapse -->
+        <button class="sidebar-toggle" id="sidebar-toggle" title="Thu gọn/Mở rộng Sidebar">
+            <i class="fa-solid fa-chevron-left" id="toggle-icon"></i>
+        </button>
+
+        <!-- 2. Panel ở giữa: Trình đọc tài liệu & Quiz Inline -->
+        <main class="document-panel">
+            <div class="panel-header">
+                <h3><i class="fa-solid fa-book-open"></i> Trình Đọc & Tương Tác</h3>
+                <div class="accessibility-toolbar">
+                    <button id="btn-dyslexia" title="Font chữ dễ đọc cho người khó đọc (Dyslexia-friendly)">
+                        <i class="fa-solid fa-font"></i> Dyslexia
+                    </button>
+                    <button id="btn-focus" title="Chế độ tập trung (Focus Mode)">
+                        <i class="fa-solid fa-eye"></i> Tập trung
+                    </button>
+                    <button id="btn-zoom-in" title="Phóng to chữ"><i class="fa-solid fa-magnifying-glass-plus"></i></button>
+                    <button id="btn-zoom-out" title="Thu nhỏ chữ"><i class="fa-solid fa-magnifying-glass-minus"></i></button>
+                </div>
+            </div>
+
+            <div class="document-content" id="document-text">
+                <h1 class="doc-title" id="doc-active-title">Chương 2: Kiến trúc ứng dụng Retrieval-Augmented Generation (RAG)</h1>
+                
+                <div id="doc-dynamic-body">
+                    <p>Mô hình ngôn ngữ lớn (LLM) tuy mạnh mẽ nhưng thường mắc phải hạn chế nghiêm trọng về tính cập nhật và hiện tượng "bịa đặt" thông tin (hallucination). Để giải quyết vấn đề này, kiến trúc <span class="highlight highlight-yellow" id="ref-rag" title="Định nghĩa RAG">Retrieval-Augmented Generation (RAG)</span> đã được ra đời như một phương pháp tối ưu giúp bổ sung tri thức ngoài cho mô hình mà không cần tinh chỉnh (fine-tuning).</p>
+
+                    <p>Quy trình hoạt động của RAG gồm hai bước chính: truy xuất (Retrieval) và tạo sinh (Generation). Trong giai đoạn truy xuất, câu hỏi của người dùng được chuyển đổi thành vector embedding. Sau đó, hệ thống tìm kiếm trong cơ sở dữ liệu vector để trích xuất các đoạn văn bản (chunks) có mức độ tương đồng ngữ nghĩa cao nhất.</p>
+
+                    <p>Việc <span class="highlight highlight-green" id="ref-vectordb" title="Vai trò Vector DB">sử dụng cơ sở dữ liệu vector (như Chroma DB, Pinecone)</span> đóng vai trò then chốt trong việc tăng tốc độ và độ chính xác của quá trình tìm kiếm ngữ nghĩa, đảm bảo các context được đưa vào prompt của LLM là phù hợp nhất.</p>
+
+                    <!-- Câu hỏi trắc nghiệm Inline -->
+                    <div class="quiz-card inline-quiz">
+                        <div class="quiz-header">
+                            <span class="quiz-tag"><i class="fa-solid fa-circle-question"></i> Câu hỏi trắc nghiệm</span>
+                            <span class="quiz-xp">+10 XP</span>
+                        </div>
+                        <p class="quiz-question">Thành phần nào chịu trách nhiệm lưu trữ các vector biểu diễn và tính toán độ tương đồng ngữ nghĩa trong kiến trúc RAG?</p>
+                        <div class="quiz-options">
+                            <div class="option-card" data-correct="false">
+                                <span class="option-letter">A</span>
+                                <span class="option-text">SQLite / Hệ quản trị CSDL quan hệ</span>
+                            </div>
+                            <div class="option-card" data-correct="true">
+                                <span class="option-letter">B</span>
+                                <span class="option-text">Chroma Vector DB / Cơ sở dữ liệu Vector</span>
+                            </div>
+                            <div class="option-card" data-correct="false">
+                                <span class="option-letter">C</span>
+                                <span class="option-text">Thư viện python-docx trích xuất text</span>
+                            </div>
+                            <div class="option-card" data-correct="false">
+                                <span class="option-letter">D</span>
+                                <span class="option-text">Gemini 2.5 Flash API</span>
+                            </div>
+                        </div>
+                        <div class="quiz-feedback hidden">
+                            <div class="feedback-icon"></div>
+                            <div class="feedback-text"></div>
+                        </div>
+                    </div>
+
+                    <p>Tuy nhiên, RAG vẫn có thể gặp phải một số lỗi nghiêm trọng. Điển hình là khi tài liệu đầu vào bị thiếu thông tin hoặc khi <span class="highlight highlight-orange" id="ref-hallucination" title="Lỗi Hallucination trong RAG">LLM bỏ qua ngữ cảnh được cung cấp và tự tạo câu trả lời theo dữ liệu huấn luyện cũ</span>. Đây gọi là hiện tượng hallucination trong RAG, yêu cầu việc thiết lập các bộ kiểm chuẩn và chấm điểm chặt chẽ.</p>
+
+                    <!-- Câu hỏi tự luận ôn tập -->
+                    <div class="essay-card">
+                        <div class="quiz-header">
+                            <span class="quiz-tag"><i class="fa-solid fa-pen-clip"></i> Bài tập tự luận</span>
+                            <span class="quiz-xp">+50 XP</span>
+                        </div>
+                        <p class="quiz-question">Hãy giải thích sự khác biệt giữa kiến trúc RAG và mô hình LLM truyền thống trong việc giảm thiểu hiện tượng "bịa đặt" thông tin (hallucination).</p>
+                        <textarea id="essay-input" placeholder="Nhập câu trả lời tự luận của bạn tại đây (tối thiểu 20 từ để AI đánh giá hiệu quả nhất)..."></textarea>
+                        <div class="essay-actions">
+                            <button id="btn-submit-essay" class="btn-primary">
+                                <i class="fa-solid fa-paper-plane"></i> Nộp bài tự luận
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- 3. Panel bên phải nhất: AI Tutor & Chấm điểm -->
+        <aside class="tutor-panel">
+            <div class="panel-header">
+                <h3><i class="fa-solid fa-robot"></i> Gia sư AI Sparky</h3>
+            </div>
+
+            <!-- Khu vực Chat và Phản hồi kết quả -->
+            <div class="tutor-container">
+                <!-- Shiba AI Avatar -->
+                <div class="ai-avatar-card">
+                    <div class="shiba-avatar">
+                        <img src="https://images.unsplash.com/photo-1583511655857-d19b40a7a54e?auto=format&fit=crop&q=80&w=150&h=150" alt="Shiba Tutor">
+                        <span class="status-dot"></span>
+                    </div>
+                    <div class="avatar-info">
+                        <h4>Sparky</h4>
+                        <p>Trợ lý học tập AI của bạn</p>
+                    </div>
+                </div>
+
+                <!-- Chat Feed -->
+                <div class="chat-feed" id="chat-feed">
+                    <div class="chat-bubble ai-bubble">
+                        <p>Gâu gâu! Mình là Sparky. 🐾 Rất vui được đồng hành cùng bạn học tập!</p>
+                        <p>Hãy nạp thêm tài liệu học tập của bạn ở **bảng bên trái** 📂 hoặc bắt đầu học tập ngay với tài liệu mẫu sẵn có nhé!</p>
+                        <span class="chat-time">Vừa xong</span>
+                    </div>
+                </div>
+
+                <!-- AI Evaluation Card (Hidden initially, shown after submit) -->
+                <div class="evaluation-card hidden" id="evaluation-card">
+                    <div class="eval-header">
+                        <h4><i class="fa-solid fa-square-poll-vertical"></i> Kết Quả Chấm Điểm Từ AI</h4>
+                        <span class="xp-gain">+50 XP Earned!</span>
+                    </div>
+                    
+                    <div class="score-section">
+                        <div class="score-circle">
+                            <span class="score-number" id="eval-score">85%</span>
+                            <span class="score-label">Đạt yêu cầu</span>
+                        </div>
+                        <div class="score-summary">
+                            <h5>Đánh giá chung</h5>
+                            <p id="eval-summary">Câu trả lời của bạn rất tốt, thể hiện sự hiểu biết sâu sắc về vai trò của context trong RAG. Tuy nhiên, bạn cần bổ sung thêm chi tiết về cơ sở dữ liệu vector.</p>
+                        </div>
+                    </div>
+
+                    <div class="eval-details">
+                        <div class="detail-block strengths">
+                            <h6><i class="fa-solid fa-circle-check"></i> Điểm mạnh (Đã đạt)</h6>
+                            <ul id="list-strengths">
+                                <li>Phân biệt rõ ràng việc LLM truyền thống bị giới hạn kiến thức trong tập train.</li>
+                                <li>Giải thích chính xác cơ chế đưa tài liệu ngoài làm context cho prompt của LLM.</li>
+                            </ul>
+                        </div>
+
+                        <div class="detail-block gaps">
+                            <h6><i class="fa-solid fa-circle-exclamation"></i> Lỗ hổng cần bổ sung</h6>
+                            <ul id="list-gaps">
+                                <li>Chưa đề cập tới vai trò của **Cơ sở dữ liệu Vector** trong việc tìm kiếm thông tin nhanh chóng.</li>
+                            </ul>
+                        </div>
+
+                        <div class="detail-block recommendation">
+                            <h6><i class="fa-solid fa-lightbulb"></i> Gợi ý cải thiện</h6>
+                            <p id="eval-recommendation">Bạn nên đọc thêm phần giới thiệu về cơ sở dữ liệu vector ở cột bên trái và bổ sung vai trò của Chroma DB vào câu trả lời.</p>
+                            <div class="citation-links" id="citation-container">
+                                <span class="citation-badge" data-target="ref-vectordb">
+                                    <i class="fa-solid fa-bookmark"></i> Xem nguồn: Vai trò Vector DB
+                                </span>
+                                <span class="citation-badge" data-target="ref-hallucination">
+                                    <i class="fa-solid fa-bookmark"></i> Xem nguồn: Lỗi Hallucination
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </aside>
+    </div>
+
+    <!-- JavaScript logic -->
+    <script src="app.js"></script>
+</body>
+</html>
