@@ -14,6 +14,8 @@ Chatbot cho phép người dùng upload tài liệu (PDF, docx) và đặt câu 
 1. **Sinh câu hỏi ôn tập:** Từ tài liệu đã nạp, hệ thống tự động sinh câu hỏi trắc nghiệm và tự luận để người dùng ôn tập, đồng thời tự chấm điểm bài làm (trắc nghiệm chấm rule-based, tự luận chấm bằng LLM-as-judge có nhận xét chi tiết).
 2. **Lộ trình học cá nhân hóa:** Sau khi tài liệu được chunk & embed, hệ thống phân tích và gắn nhãn các chủ đề/khái niệm trong tài liệu, sau đó sinh ra lộ trình học dựa trên mục tiêu điểm số người dùng đặt ra — mục tiêu điểm càng cao, lộ trình càng chi tiết và bao phủ nhiều kiến thức nâng cao hơn.
 3. **Nộp bài tự luận bằng ảnh scan:** Ngoài gõ text, người dùng có thể chụp/scan bài làm viết tay hoặc in để nộp, hệ thống tự trích xuất nội dung trước khi chấm.
+4. **Không gian học nhóm có lời mời:** Mỗi project có owner và member. Owner quản lý tài liệu, lịch chung và lời mời; member được xem tài liệu, chat, làm quiz và tạo annotation riêng.
+5. **PDF annotation theo tọa độ:** Người dùng có thể highlight text/vùng chữ nhật trên PDF, chọn màu và thêm ghi chú. Tọa độ được chuẩn hóa để không lệch khi zoom hoặc đổi kích thước màn hình.
 
 **Về mặt kỹ thuật (quy mô "tầm trung"):**
 - Chunking tự viết (giữ nguyên để thể hiện chiều sâu hiểu biết), tích hợp LangChain làm khung orchestration (vectorstore, retriever, structured output)
@@ -35,34 +37,37 @@ Các tính năng này biến dự án từ "chatbot hỏi-đáp" chung chung th�
 
 **Nguyên tắc quan trọng:** mọi API key (Gemini, Supabase service key) chỉ nằm ở **backend (FastAPI)**, không bao giờ đưa vào code React — vì code chạy trên trình duyệt luôn có thể bị người dùng xem được (khác với Streamlit trước đây, nơi mọi thứ chạy trên server nên việc này "mặc định an toàn"; giờ tách frontend/backend thì đây là điều phải chủ động đảm bảo).
 
-Hệ thống backend gồm 4 luồng chính, dùng chung phần chunk/embedding ở bước đầu. Mỗi luồng được expose qua các endpoint FastAPI để React gọi vào.
+Hệ thống backend gồm các luồng ingestion/RAG, roadmap, quiz, cộng tác và PDF annotation. Mỗi luồng được expose qua endpoint FastAPI; mọi endpoint đều xác thực Supabase JWT và kiểm tra quyền project ở backend.
 
 ### (a) Luồng nạp tài liệu (nền tảng chung)
 ```
-[User upload file trên React] → POST /documents/upload → [Trích xuất text] → [Chunking tự viết]
+[Owner upload file trên React] → POST /projects/{project_id}/documents → [Tạo document version + ingestion job]
+                                                                                      ↓
+                                                              [Trích xuất text] → [Chunking tự viết]
                                                                                       ↓
                                                               [Bọc thành LangChain Document]
                                                                                       ↓
-                                                        [Embedding: sentence-transformers]
+                                                        [Embedding multilingual: sentence-transformers]
                                                                                       ↓
-                              [LangChain SupabaseVectorStore] → [Supabase: Postgres + pgvector]
+                              [RPC match_chunks + pgvector] → [Supabase Postgres + private Storage]
 ```
 
 ### (b) Luồng chat hỏi-đáp
 ```
-[User gửi câu hỏi trên React] → POST /chat → [Embedding câu hỏi] → [LangChain retriever trên Supabase]
+[User gửi câu hỏi trên React] → POST /projects/{project_id}/chat/sessions/{session_id}/messages
+                                         → [Embedding câu hỏi] → [RPC match_chunks lọc project + document ready]
                                                                                 ↓
-                                                          [LLM sinh câu trả lời + trích dẫn]
+                                                          [Threshold + rerank → LLM sinh câu trả lời + trích dẫn]
                                                                                 ↓
-                                                    [Trả lời + nguồn] → hiển thị trên React
+                                                    [Trả lời + nguồn hoặc từ chối khi thiếu bằng chứng]
 ```
 
 ### (c) Luồng sinh lộ trình học cá nhân hóa
 ```
-POST /roadmap/generate → [Chunk trong Supabase] → [LLM: trích xuất & gắn nhãn chủ đề] → [Bảng `topics`]
+POST /projects/{project_id}/roadmap/generate → [Chunk trong Supabase] → [LLM trích xuất chủ đề + prerequisite]
                     (mỗi chủ đề: mức độ khó, cấp độ Bloom: Nhớ/Hiểu/Áp dụng/Phân tích, chunk liên quan)
                                     ↓
-[User đặt mục tiêu điểm trên React] → [Lọc & sắp xếp chủ đề theo mục tiêu] → [Lộ trình học]
+[Target score + exam date + thời gian học/tuần + diagnostic] → [Xếp thứ tự prerequisite] → [Lộ trình học]
                                     ↓
                     Điểm mục tiêu thấp  → chỉ chủ đề cốt lõi, cấp độ Nhớ/Hiểu
                     Điểm mục tiêu TB    → + chủ đề mức Áp dụng
@@ -71,29 +76,44 @@ POST /roadmap/generate → [Chunk trong Supabase] → [LLM: trích xuất & gắ
 
 ### (d) Luồng sinh câu hỏi & làm bài
 ```
-POST /questions/generate → [Chunk / chủ đề đã gắn nhãn] → [LLM sinh câu hỏi] → [Bảng `questions`]
+POST /projects/{project_id}/questions/generate → [Chunk/chủ đề] → [LLM sinh câu hỏi] → [Bảng `questions`]
                                                           (MCQ + tự luận, kèm đáp án/rubric, gắn chunk nguồn)
                                                                     ↓
-[User làm bài trên React]
-      ├─ Trắc nghiệm → chọn đáp án → POST /quiz/submit → [Chấm rule-based] → điểm tức thì
+[User bắt đầu quiz session trên React]
+      ├─ Trắc nghiệm → chọn đáp án → POST /quiz-sessions/{id}/answers → [Chấm rule-based]
       └─ Tự luận  ├─ Gõ text ──────────────────────────────┐
-                  └─ Upload ảnh scan → POST /quiz/submit-scan │
-                     → [Gemini Vision trích xuất text]        │
-                     → trả text về React để user xác nhận/    │
-                       chỉnh sửa → gửi lại backend ───────────┤
+                  └─ Upload ảnh scan → POST /quiz-sessions/{id}/answers/scan
+                     → [Lưu private Storage + Gemini Vision OCR]
+                     → trả text về React để user xác nhận/chỉnh sửa
+                     → POST /quiz-sessions/{id}/answers/{answer_id}/confirm
                                                                 ↓
                                           [LLM-as-judge: so với đáp án mẫu/key points]
                                                                 ↓
-                              [Điểm số + nhận xét + trích dẫn nguồn] → [Bảng `quiz_attempts`]
+                              [Điểm + nhận xét + nguồn + model/prompt version] → [`quiz_attempts`]
                                                                 ↓
                                                     hiển thị kết quả trên React
+```
+
+### (e) Luồng mời thành viên và phân quyền
+```
+[Owner nhập email] → POST /projects/{id}/invitations → [Lưu token hash + gửi link có hạn]
+→ [User đăng nhập, email đã xác minh] → POST /invitations/{token}/accept
+→ [Transaction: kiểm tra token/email/expiry → thêm project_members → đánh dấu accepted]
+```
+
+### (f) Luồng PDF annotation
+```
+[PDF.js render document version] → [User chọn text/vùng chữ nhật]
+→ POST /document-versions/{id}/annotations
+→ [Lưu page_number + rectangles chuẩn hóa 0..1 + selected_text + màu + note]
+→ Chỉ chính user được xem/sửa/xóa annotation của mình
 ```
 
 ---
 
 ## 3. Thiết kế chunking tự viết + tích hợp LangChain
 
-Quyết định: **tự viết thuật toán chunking** (thay vì dùng thẳng LangChain `RecursiveCharacterTextSplitter`) để hiểu sâu cơ chế RAG và kiểm soát tốt hơn cho văn bản tiếng Việt — nhưng **bọc output thành `Document` object của LangChain** để tương thích với phần còn lại của framework (vectorstore, retriever, chain, structured output parser). Đây là hướng kết hợp: giữ phần "lõi" tự viết, dùng LangChain làm "khung" phía sau.
+Quyết định: **tự viết thuật toán chunking** (thay vì dùng thẳng LangChain `RecursiveCharacterTextSplitter`) để hiểu sâu cơ chế RAG và kiểm soát tốt hơn cho văn bản tiếng Việt. Có thể bọc output thành `Document` ở lớp ứng dụng để dùng prompt/retriever interface của LangChain, nhưng persistence và vector search đi qua repository + RPC `match_chunks` tùy biến.
 
 ### Nguyên tắc thiết kế
 Luôn cắt tại ranh giới ngữ nghĩa tự nhiên (câu, đoạn) — **không bao giờ** cắt cứng theo số ký tự (kiểu `text[0:1000]`), vì dễ cắt ngang giữa câu/ý, phá vỡ ngữ nghĩa và làm embedding lẫn LLM hiểu sai nội dung.
@@ -110,22 +130,29 @@ Dùng regex tách câu theo dấu `.`, `?`, `!`, có xử lý riêng các trư�
 
 **Bước 3 — Gộp câu theo kiểu "greedy" đến kích thước mục tiêu**
 ```python
-def chunk_sentences(sentences, target_size=500, max_size=700):
+def chunk_sentences(sentences, target_tokens=220, max_tokens=256):
     chunks = []
     current = []
     current_len = 0
     for sent in sentences:
-        sent_len = len(sent.split())  # đếm theo từ, đơn giản & đủ tốt
-        if current_len + sent_len > target_size and current:
-            chunks.append(" ".join(current))
-            current, current_len = [], 0
-        current.append(sent)
-        current_len += sent_len
+        sent_len = count_embedding_tokens(sent)
+        if sent_len > max_tokens:
+            # Fallback: tách câu quá dài theo clause rồi mới đến token window.
+            sentences_to_add = split_long_sentence(sent, max_tokens)
+        else:
+            sentences_to_add = [sent]
+        for item in sentences_to_add:
+            item_len = count_embedding_tokens(item)
+            if current_len + item_len > target_tokens and current:
+                chunks.append(" ".join(current))
+                current, current_len = [], 0
+            current.append(item)
+            current_len += item_len
     if current:
         chunks.append(" ".join(current))
     return chunks
 ```
-Duyệt qua từng câu, gộp dần vào chunk hiện tại đến khi gần chạm `target_size` thì đóng chunk và bắt đầu chunk mới.
+Duyệt qua từng câu, đo bằng tokenizer của embedding model và gộp đến `target_tokens`. Câu dài vượt `max_tokens` phải có fallback tách theo mệnh đề/token; không được âm thầm để model truncate phần cuối.
 *Lý do dùng greedy:* đơn giản, dễ kiểm soát, đảm bảo chunk có kích thước tương đối đồng đều — tránh chunk siêu ngắn (thiếu ngữ cảnh) hoặc siêu dài (loãng ý).
 
 **Bước 4 — Thêm overlap giữa các chunk**
@@ -133,8 +160,8 @@ Lấy 1-2 câu cuối của chunk trước, chèn vào đầu chunk sau.
 *Lý do:* nếu không có overlap, thông tin nằm ngay ranh giới 2 chunk có thể bị "gãy" — nửa ở chunk này, nửa ở chunk kia, khiến truy vấn không đủ ngữ cảnh để trả lời chính xác.
 
 **Bước 5 — Gắn metadata & bọc thành LangChain Document**
-Lưu kèm: tên file, số trang, section/heading (nếu có), chunk index, vị trí ký tự gốc. Sau đó tạo đối tượng `Document(page_content=chunk_text, metadata={...})` từ `langchain_core.documents`.
-*Lý do:* metadata bắt buộc để tính năng trích dẫn nguồn và gắn nhãn chủ đề hoạt động được. Bọc thành `Document` giúp chunk "tự viết" cắm thẳng vào `SupabaseVectorStore` và retriever của LangChain mà không cần viết thêm code tích hợp thủ công.
+Lưu kèm: project, document version, tên file, số trang, section/heading, chunk index và `source_spans`. Dùng danh sách span thay cho một cặp offset vì phần overlap có thể đến từ nhiều vùng nguồn. Sau đó có thể tạo `Document(page_content=..., metadata=...)` ở lớp ứng dụng, nhưng việc lưu/truy vấn dùng schema `chunks` và RPC `match_chunks` tùy biến để giữ ràng buộc quan hệ rõ ràng.
+*Lý do:* metadata bắt buộc để trích dẫn và gắn nhãn chủ đề hoạt động. Việc tách lớp chuyển đổi `Document` khỏi lớp lưu trữ giúp schema quan hệ vẫn có foreign key/project isolation mà không phụ thuộc schema mặc định của một vectorstore adapter.
 
 ```python
 from langchain_core.documents import Document
@@ -154,134 +181,120 @@ def to_langchain_documents(chunks_with_metadata):
 - Gắn metadata đúng ý đồ thiết kế (phục vụ trích dẫn + gắn nhãn chủ đề cho lộ trình học) thay vì phải "vá" thêm vào output của thư viện
 
 **Vì sao vẫn dùng LangChain cho phần còn lại:**
-- Tránh viết lại code tích hợp Supabase/pgvector thủ công (`SupabaseVectorStore` đã có sẵn, được maintain, xử lý batch insert/query hiệu quả)
-- Có sẵn retriever interface, prompt template, structured output parser (hữu ích cho việc ép JSON khi sinh câu hỏi/chấm điểm)
+- Có sẵn prompt template, retriever interface và structured output parser (hữu ích cho việc ép JSON khi sinh câu hỏi/chấm điểm)
+- Repository/RPC pgvector vẫn tự viết để kiểm soát filter tenant, document version, threshold và citation metadata
 - Dễ tích hợp Gemini qua `langchain_google_genai` mà không cần tự viết wrapper gọi API
 
 **Đánh đổi cần lưu ý (nên ghi vào README):**
 - Tốn thời gian test nhiều edge case hơn ở phần chunking tự viết (bảng biểu trong PDF, danh sách gạch đầu dòng ngắn...) mà thư viện đã xử lý sẵn
-- Đếm độ dài theo số từ chỉ là ước lượng gần đúng cho số token thực tế
+- Tokenizer và giới hạn chunk phụ thuộc embedding model; mọi thay đổi model phải tạo document version và re-embed thay vì trộn vector khác phiên bản
 - Dùng LangChain nghĩa là phụ thuộc thêm 1 framework — cần hiểu rõ nó làm gì bên dưới để vẫn trả lời được câu hỏi phỏng vấn về cách retriever/vectorstore hoạt động
 
 ---
 
-## 4. Tech stack (100% miễn phí)
+## 4. Tech stack (free-tier-first cho portfolio/demo)
 
 | Thành phần | Công cụ | Ghi chú |
 |---|---|---|
 | Trích xuất PDF | `pdfplumber` | Mã nguồn mở, free |
 | Trích xuất Word | `python-docx` | Mã nguồn mở, free |
 | Chia chunk | **Tự viết** (xem Mục 3) | Tách theo đoạn → câu → gộp greedy có overlap; bọc thành `Document` của LangChain |
-| Framework orchestration | LangChain | `SupabaseVectorStore`, retriever, prompt template, structured output parser, tích hợp Gemini qua `langchain_google_genai` |
-| Embedding | `sentence-transformers` (`all-MiniLM-L6-v2`) | Chạy local, miễn phí tuyệt đối, không giới hạn request |
-| Vector DB | Supabase (Postgres + extension `pgvector`) | Free tier 500MB DB, không cần thẻ tín dụng; bền vững qua các lần deploy (khác Chroma local) |
-| LLM sinh câu trả lời | Gemini 2.5 Flash API | Free tier ~1.500 request/ngày, đủ cho demo |
+| Framework orchestration | LangChain | Prompt template, retriever abstraction, structured output và tích hợp Gemini; không phụ thuộc `SupabaseVectorStore` cho persistence |
+| Embedding | `sentence-transformers` multilingual 384 chiều (baseline: `paraphrase-multilingual-MiniLM-L12-v2`) | Phù hợp tài liệu tiếng Việt; model cuối cùng phải được chọn bằng benchmark retrieval, không chọn chỉ theo độ phổ biến |
+| Vector DB | Supabase Postgres + `pgvector` + RPC `match_chunks` | Filter theo project/document version ngay trong SQL, có similarity threshold; dùng HNSW sau khi có dữ liệu benchmark |
+| LLM sinh câu trả lời | Gemini Flash model ổn định được cấu hình bằng environment | Không hard-code quota/model alias trong plan; kiểm tra model và rate limit hiện hành trước deploy |
 | **Backend API** | **FastAPI** | Expose REST endpoint cho toàn bộ logic (upload, chat, roadmap, quiz); xử lý CORS để React gọi được |
 | **Frontend** | **ReactJS (Vite)** | SPA, gọi backend qua REST API (JSON cho text, multipart cho file/ảnh) |
 | Giao tiếp Frontend ↔ Backend | REST API (Axios/fetch), CORS middleware trong FastAPI | API key (Gemini, Supabase) chỉ lưu ở backend, không lộ ra frontend |
-| Phân tích & gắn nhãn chủ đề | Gemini 2.5 Flash API | Trích xuất danh sách chủ đề, gắn mức độ khó/cấp độ Bloom; lưu vào bảng `topics` trong Supabase |
-| Sinh lộ trình học | Logic lọc/sắp xếp (rule-based) trên bảng `topics` | Không cần thêm thư viện; điều chỉnh độ chi tiết theo mục tiêu điểm user chọn |
-| Sinh câu hỏi (MCQ + tự luận) | Gemini 2.5 Flash API, ép output JSON (LangChain structured output parser) | Giới hạn số câu theo số đơn vị kiến thức thực có, tránh bịa đặt/trùng lặp |
-| Question bank / lịch sử làm bài / lộ trình | Bảng Postgres trong Supabase (`questions`, `quiz_attempts`, `topics`) | Dùng chung 1 database cho toàn bộ dữ liệu quan hệ |
-| Kết nối Supabase | `supabase-py` (client) + LangChain `SupabaseVectorStore` | `supabase-py` cho các bảng quan hệ, LangChain cho phần vector |
+| Phân tích & gắn nhãn chủ đề | Gemini Flash + structured output | Trích xuất topic, nguồn và prerequisite; lưu model/prompt version |
+| Sinh lộ trình học | Rule-based trên topics/prerequisites + diagnostic/time constraints | Target score không phải đầu vào duy nhất |
+| Sinh câu hỏi (MCQ + tự luận) | Gemini Flash + LangChain structured output | Giới hạn theo knowledge units, source chunks và dedup embedding |
+| Question bank / lịch sử / lộ trình | Schema Postgres v5 | Quiz session, attempt snapshot và review state tách riêng |
+| Kết nối Supabase | `supabase-py` + repository/RPC tùy biến | Không giả định schema mặc định của `SupabaseVectorStore`; LangChain vẫn dùng cho prompt, structured output và orchestration |
+| Auth & phân quyền | Supabase Auth + RLS + FastAPI JWT verification | Auth/RLS là bắt buộc trong MVP; service key chỉ dùng cho tác vụ hệ thống và backend vẫn phải kiểm tra membership |
+| Lưu file | Supabase Storage private buckets | PDF/docx và ảnh bài viết tay không public; truy cập qua signed URL ngắn hạn |
+| PDF viewer | PDF.js | Render PDF, text selection và rectangles chuẩn hóa cho annotation |
 | Chấm trắc nghiệm | Rule-based (so sánh đáp án) | Không cần LLM, tức thì, 100% nhất quán |
-| Chấm tự luận | Gemini 2.5 Flash API (LLM-as-judge) | So câu trả lời user với đáp án mẫu/key points, trả điểm + nhận xét |
-| Nộp bài bằng ảnh scan | Gemini 2.5 Flash API (multimodal/vision) | Gửi ảnh qua endpoint FastAPI, không cần thư viện OCR riêng; luôn cho user xác nhận/sửa text trước khi chấm |
+| Chấm tự luận | Gemini Flash (LLM-as-judge) | Chấm theo rubric + evidence, lưu model/prompt version; không chỉ so với đáp án mẫu |
+| Nộp bài bằng ảnh scan | Gemini multimodal/vision | Lưu private, OCR trước, bắt buộc user xác nhận/sửa text rồi mới chấm |
 | Deploy Backend | Render free tier (hoặc HuggingFace Spaces bằng Docker) | Free, dễ deploy từ GitHub; lưu ý free tier có thể "ngủ" sau thời gian không hoạt động (cold start request đầu tiên chậm) |
 | Deploy Frontend | Vercel hoặc Netlify free tier | Free, deploy React SPA từ GitHub, có HTTPS + custom domain sẵn |
 
 > **Lưu ý:**
 > - Rate limit/điều khoản free tier của Gemini có thể thay đổi theo thời gian — kiểm tra lại trên Google AI Studio trước khi build.
 > - Project Supabase free tier sẽ **tạm dừng sau 7 ngày không hoạt động** (dữ liệu không mất, chỉ cần kích hoạt lại).
-> - Backend Render free tier cũng có thể **spin down khi không có traffic**, khiến request đầu tiên sau thời gian nghỉ bị chậm (cold start) — nên ghi rõ trong README, hoặc cân nhắc ping định kỳ bằng GitHub Actions nếu cần demo luôn nhanh khi phỏng vấn.
+> - Backend Render free tier có thể spin down khi không có traffic; không dùng process FastAPI làm cron/scheduler đáng tin cậy và cần ghi rõ cold start trong README.
 
 ---
 
-## 5. Roadmap từng bước
+## 5. Roadmap MVP từng bước
 
-### Bước 1 — Setup Supabase & kiểm tra retrieval (chưa cần LLM)
-- [ ] Tạo project Supabase free tier, bật extension `pgvector`
-- [ ] Tạo bảng `documents` và `chunks` (cột `embedding` kiểu `vector`) trong Supabase
-- [ ] Đọc 1 file PDF mẫu
-- [ ] Viết hàm chia chunk tự thiết kế (xem Mục 3): tách đoạn → tách câu (xử lý viết tắt/số thập phân tiếng Việt) → gộp greedy → thêm overlap → gắn metadata
-- [ ] Bọc mỗi chunk thành `Document` của LangChain
-- [ ] Embed chunk bằng `sentence-transformers`
-- [ ] Lưu vào Supabase qua `SupabaseVectorStore` của LangChain
-- [ ] Thử 1 câu hỏi, dùng retriever của LangChain để in ra chunk liên quan nhất (test bằng script Python thuần, chưa cần API/UI)
-- **Mục tiêu:** xác nhận toàn bộ pipeline chunking tự viết + LangChain + Supabase hoạt động đúng trước khi thêm LLM
+### Bước 1 — Schema, Auth, RLS và Storage
+- [ ] Tạo migration theo `Database_design_plan.md` v5; bật `pgvector` và tạo private buckets cho tài liệu/ảnh bài làm.
+- [ ] Tích hợp Supabase Auth email/password, xác minh JWT trong FastAPI và tạo owner membership cùng transaction khi tạo project.
+- [ ] Hoàn thiện RLS cho mọi bảng; thêm integration test chứng minh user ngoài project không đọc/ghi được dữ liệu.
+- [ ] Khóa quyền MVP: owner quản lý file, câu hỏi, lịch và invitation; member xem tài liệu, chat, làm quiz và CRUD annotation riêng.
+- **Mục tiêu:** nền tảng multi-user an toàn trước khi thêm dữ liệu học tập.
 
-### Bước 2 — Thêm LLM sinh câu trả lời
-- [ ] Lấy chunk liên quan làm context
-- [ ] Ghép context + câu hỏi vào prompt (dùng LangChain prompt template)
-- [ ] Gọi Gemini 2.5 Flash API để sinh câu trả lời
-- **Mục tiêu:** RAG hoạt động end-to-end lần đầu tiên (vẫn ở dạng script/notebook)
+### Bước 2 — Ingestion, document versioning và retrieval
+- [ ] Upload PDF/docx vào Storage private; lưu checksum, MIME thực, kích thước và tạo `document_versions` + `ingestion_jobs`.
+- [ ] Xử lý bất đồng bộ extract → chunk theo tokenizer → embed multilingual → summary; retry phải idempotent.
+- [ ] Viết RPC `match_chunks` lọc theo project, version đang active và document `ready`; thêm similarity threshold.
+- [ ] Benchmark ít nhất hai cấu hình embedding/chunk trên bộ câu hỏi tiếng Việt trước khi chốt model.
+- **Mục tiêu:** upload có progress/retry và retrieval không bao giờ lẫn project.
 
-### Bước 3 — Thêm trích dẫn nguồn
-- [ ] Lưu metadata cho mỗi chunk (tên file, số trang/đoạn)
-- [ ] Hiển thị nguồn kèm mỗi câu trả lời (vd: "Trích từ trang 5, file abc.pdf")
-- **Mục tiêu:** tăng độ tin cậy, giảm hallucination — điểm cộng lớn khi phỏng vấn
+### Bước 3 — RAG chat có citation và abstain
+- [ ] Tạo chat session/history, multi-document retrieval trong phạm vi project và streaming response.
+- [ ] Mỗi citation chứa chunk, document version, file, trang và source spans để UI mở đúng nguồn.
+- [ ] Nếu không có evidence vượt threshold, trả trạng thái `insufficient_evidence` thay vì để LLM đoán.
+- [ ] Đo retrieval recall, answer correctness, citation correctness và latency trên test set cố định.
+- **Mục tiêu:** vertical slice RAG chạy end-to-end và có số liệu đánh giá.
 
-### Bước 4 — Hỗ trợ nhiều file, nhiều định dạng
-- [ ] Cho phép xử lý nhiều PDF/docx cùng lúc
-- [ ] Gộp tất cả vào chung bảng `chunks` trong Supabase, phân biệt bằng `document_id`
+### Bước 4 — Group invitation
+- [ ] Owner tạo/hủy/liệt kê invitation; mỗi project/email chỉ có một invitation pending.
+- [ ] Chỉ lưu token hash; link có expiry. Accept yêu cầu user đăng nhập và email đã xác minh trùng email được mời.
+- [ ] Accept invitation chạy transaction: khóa invitation → kiểm tra status/expiry/email → insert membership → đánh dấu accepted.
+- **Mục tiêu:** chia sẻ project an toàn mà member không có quyền quản trị nội dung chung.
 
-### Bước 5 — Xây dựng FastAPI backend & giao diện React cho chức năng Chat
-- [ ] Khởi tạo project FastAPI, cấu hình CORS cho phép gọi từ React dev server
-- [ ] Viết endpoint `POST /documents/upload` (nhận PDF/docx, chạy pipeline chunk → embed → lưu Supabase từ Bước 1-4)
-- [ ] Viết endpoint `POST /chat` (nhận câu hỏi, trả lời + trích dẫn nguồn)
-- [ ] Khởi tạo project React (Vite), cấu trúc thư mục cơ bản
-- [ ] Component upload file, gọi API `/documents/upload`
-- [ ] Component khung chat, gọi API `/chat`, hiển thị câu trả lời kèm trích dẫn nguồn
-- **Mục tiêu:** có bản demo end-to-end đầu tiên chạy trên trình duyệt qua React, tách biệt rõ frontend/backend
+### Bước 5 — PDF viewer và annotation tọa độ
+- [ ] Dùng PDF.js render đúng `document_version` và text layer.
+- [ ] Hỗ trợ highlight text/vùng chữ nhật, màu, note và CRUD annotation.
+- [ ] Lưu page number, selected text và danh sách rectangle chuẩn hóa `0..1`; annotation luôn riêng theo user.
+- [ ] Khi có version mới, annotation cũ tiếp tục mở version cũ và không tự map tọa độ.
+- **Mục tiêu:** annotation giữ đúng vị trí sau reload, zoom và resize.
 
-### Bước 6 — Sinh lộ trình học cá nhân hóa
-- [ ] Tạo bảng `topics` trong Supabase (chủ đề, mức độ khó, cấp độ Bloom, chunk liên quan)
-- [ ] Thiết kế prompt yêu cầu LLM trích xuất danh sách chủ đề/khái niệm từ tài liệu
-- [ ] Gắn nhãn mỗi chủ đề: mức độ khó, cấp độ Bloom (Nhớ/Hiểu/Áp dụng/Phân tích/Đánh giá) — lưu vào bảng `topics`
-- [ ] Viết endpoint `POST /roadmap/generate` và `GET /roadmap/{document_id}`
-- [ ] Viết logic lọc & sắp xếp chủ đề theo mục tiêu: mục tiêu thấp → chỉ chủ đề cốt lõi (Nhớ/Hiểu); mục tiêu cao → thêm chủ đề nâng cao (Áp dụng/Phân tích/Đánh giá)
-- [ ] Component React: chọn mục tiêu điểm + hiển thị lộ trình học dạng danh sách chủ đề theo thứ tự gợi ý, kèm chunk/trang liên quan
-- **Mục tiêu:** cá nhân hóa độ sâu kiến thức theo mục tiêu của người học, không phải "một lộ trình cho tất cả"
+### Bước 6 — Topics, roadmap và lịch học
+- [ ] Trích xuất topics, nguồn và prerequisite từ chunks của project.
+- [ ] Roadmap nhận target score, exam date, thời gian học/tuần và diagnostic score; không suy ra độ sâu chỉ từ target score.
+- [ ] AI schedule có trạng thái `suggested/accepted/rejected`; completion được lưu riêng từng user.
+- **Mục tiêu:** lộ trình có thứ tự prerequisite và phù hợp thời gian thực tế.
 
-### Bước 7 — Sinh câu hỏi ôn tập từ tài liệu
-- [ ] Tạo bảng `questions` trong Supabase (loại câu hỏi, nội dung, đáp án/rubric, chunk nguồn)
-- [ ] Thiết kế prompt sinh câu hỏi với ràng buộc JSON schema (mcq + tự luận, dùng LangChain structured output parser), yêu cầu model chỉ dùng nội dung chunk được cung cấp
-- [ ] Viết endpoint `POST /questions/generate`
-- [ ] Với mỗi chunk/chủ đề, gọi Gemini sinh N câu trắc nghiệm (4 đáp án, 1 đúng) + N câu tự luận (kèm đáp án mẫu/key points)
-- [ ] Lưu vào bảng `questions`, gắn mỗi câu hỏi với chunk nguồn để chấm điểm và trích dẫn sau này
-- [ ] **Xử lý trường hợp user yêu cầu số câu hỏi vượt quá lượng kiến thức thực có:**
-  - [ ] Bước trung gian: yêu cầu LLM liệt kê "đơn vị kiến thức" có trong chunk/chủ đề trước khi sinh câu hỏi
-  - [ ] Giới hạn số câu hỏi sinh ra theo số đơn vị kiến thức thực có, không theo số user yêu cầu
-  - [ ] Sau khi sinh, so sánh embedding giữa các câu hỏi (`sentence-transformers`) để loại câu hỏi trùng/na ná nhau
-  - [ ] Nếu số câu hỏi thực tế ít hơn yêu cầu, trả về lý do rõ ràng trong response API để React hiển thị thông báo cho user
-- **Mục tiêu:** có bộ câu hỏi được sinh tự động, bám sát nội dung tài liệu, không bịa đặt, không trùng lặp để "đủ số lượng"
+### Bước 7 — Question bank và quiz sessions
+- [ ] Sinh MCQ/tự luận bằng structured output; mỗi question có source chunks, rubric, model/prompt version và trạng thái version.
+- [ ] Giới hạn số câu theo knowledge units, loại trùng bằng embedding và trả lý do nếu sinh ít hơn yêu cầu.
+- [ ] Tạo `quiz_sessions` để nhóm câu hỏi thành một lần làm bài; `quiz_attempts` lưu từng câu và snapshot nội dung/rubric.
+- [ ] MCQ chấm rule-based; tự luận chấm theo rubric + evidence, không chỉ so với model answer.
+- **Mục tiêu:** tổng điểm/lịch sử vẫn đúng khi question hoặc document có version mới.
 
-### Bước 8 — Giao diện React làm bài & Tự chấm điểm (kể cả nộp bằng ảnh scan)
-- [ ] Tạo bảng `quiz_attempts` trong Supabase (câu hỏi, câu trả lời user, điểm, nhận xét, thời gian nộp, hình thức nộp)
-- [ ] Viết endpoint `POST /quiz/submit` (nhận đáp án trắc nghiệm/tự luận dạng text, trả điểm + nhận xét)
-- [ ] Viết endpoint `POST /quiz/submit-scan` (nhận ảnh dạng multipart, gọi Gemini Vision trích xuất text, trả text về để user xác nhận trước khi chấm chính thức)
-- [ ] Component React tab "Quiz" (tách biệt tab "Chat" và "Lộ trình học"): hiển thị câu trắc nghiệm (radio button), câu tự luận (textarea), nút upload ảnh
-- [ ] Component xác nhận/chỉnh sửa text trích xuất từ ảnh trước khi gửi chấm chính thức
-- [ ] Hiển thị kết quả (điểm + nhận xét + trích dẫn nguồn) trả về từ backend
-- **Mục tiêu:** người dùng ôn tập và nhận phản hồi ngay, kể cả khi đã làm bài ra giấy, không cần người chấm thủ công
-- **Lưu ý:** LLM chấm tự luận có thể không hoàn toàn nhất quán giữa các lần chấm, và OCR/vision có thể đọc sai chữ viết tay khó đọc — nên ghi rõ các hạn chế này trong README
+### Bước 8 — Chấm bài viết tay
+- [ ] Upload JPEG/PNG/WebP đã kiểm tra MIME và dung lượng vào Storage private theo user/project/attempt.
+- [ ] Luồng bắt buộc hai bước: OCR → user xác nhận/sửa text → chấm chính thức.
+- [ ] Lưu OCR raw, confirmed text, model/prompt version, điểm, feedback và vùng OCR không chắc chắn.
+- [ ] Xem lại bằng signed URL ngắn hạn; user có thể xóa ảnh nhưng giữ text/kết quả nếu muốn.
+- **Mục tiêu:** ảnh không public, retry không tạo file/attempt trùng và không chấm trước khi xác nhận OCR.
 
-### Bước 9 — Cải thiện chất lượng (nâng cao)
-- [ ] Semantic chunking thay vì chia cứng theo số ký tự
-- [ ] Thêm conversation memory (nhớ ngữ cảnh nhiều lượt hỏi-đáp) — cần lưu session/history ở backend vì React không giữ state qua các lần load lại trang
-- [ ] Re-ranking: xếp hạng lại độ liên quan sau khi lấy top-k chunk
-- [ ] Xây dashboard tiến độ học tập (component React riêng) từ dữ liệu `quiz_attempts` trong Supabase
-- [ ] Streaming response cho chat (Gemini hỗ trợ stream) để trải nghiệm React mượt hơn, giống ChatGPT
-- [ ] (Tùy chọn) Gắn quiz checkpoint theo từng chủ đề, yêu cầu đạt điểm tối thiểu mới "mở khóa" chủ đề tiếp theo (gamification kiểu Duolingo)
-- [ ] (Tùy chọn) Dùng Supabase Auth để hỗ trợ nhiều người dùng, mỗi người có tài liệu/lộ trình/lịch sử riêng
+### Bước 9 — Spaced repetition và progress
+- [ ] Mỗi user-question có một `review_state` duy nhất gồm due date, interval, repetitions và ease factor.
+- [ ] Tính danh sách đến hạn khi user mở app hoặc bằng scheduler hỗ trợ thật; không phụ thuộc cron trong process FastAPI free-tier.
+- [ ] Ghi activity thô; `progress_snapshots` là aggregate idempotent có thể rebuild.
+- [ ] Dashboard hiển thị điểm, tỷ lệ đúng theo topic, streak/activity và lịch ôn đến hạn.
+- **Mục tiêu:** không tạo lịch ôn trùng và số liệu dashboard có nguồn rõ ràng.
 
-### Bước 10 — Đánh giá & Deploy
-- [ ] Soạn bộ câu hỏi test, đo tỷ lệ trả lời đúng + trích dẫn chính xác
-- [ ] (Tùy chọn) Dùng thư viện RAGAS để đánh giá bài bản hơn
-- [ ] Deploy backend FastAPI lên Render free tier (hoặc HuggingFace Spaces bằng Docker)
-- [ ] Deploy frontend React lên Vercel hoặc Netlify free tier, trỏ về URL backend đã deploy
-- [ ] Cấu hình biến môi trường (Supabase URL/key, Gemini API key) an toàn ở backend, không lộ ra bundle React
-- [ ] Viết README: vấn đề giải quyết, kiến trúc frontend/backend, demo link, hạn chế (cold start, LLM-as-judge không hoàn toàn nhất quán...)
+### Bước 10 — Hardening, đánh giá và deploy
+- [ ] Rate limit/quota cho Gemini; log request ID, job ID, model, prompt version, latency và lỗi nhưng không log nội dung nhạy cảm mặc định.
+- [ ] Test authorization, file validation, signed URL, retry/idempotency, RAG evaluation, OCR và grading consistency.
+- [ ] Deploy frontend/backend; ghi rõ cold start, quota free tier và giới hạn LLM/OCR trong README.
+- [ ] Export PDF, XP/checkpoint và chia sẻ annotation giữa thành viên để sau MVP.
 
 ---
 
@@ -297,7 +310,7 @@ Sau khi MVP chạy ổn, cân nhắc chọn 1 domain cụ thể để có câu c
 ## 7. Gợi ý viết cho CV
 
 Ví dụ câu mô tả:
-> "Xây dựng AI Study Assistant: ứng dụng full-stack (React + FastAPI) cho phép hỏi-đáp trên tài liệu PDF/docx kèm trích dẫn nguồn (tự viết thuật toán chunking theo ngữ nghĩa, tích hợp LangChain cho retrieval/orchestration); tự động sinh lộ trình học cá nhân hóa theo mục tiêu điểm số; tự sinh câu hỏi trắc nghiệm/tự luận và tự chấm điểm (rule-based cho trắc nghiệm, LLM-as-judge cho tự luận), hỗ trợ nộp bài bằng ảnh scan qua Gemini Vision. Backend: FastAPI + LangChain + Supabase (Postgres/pgvector); Frontend: ReactJS. Deploy backend trên Render, frontend trên Vercel."
+> "Xây dựng AI Study Assistant multi-user bằng React + FastAPI: RAG đa tài liệu tiếng Việt có trích dẫn và cơ chế từ chối khi thiếu bằng chứng; ingestion bất đồng bộ có versioning; mời nhóm học với RLS; PDF annotation theo tọa độ; sinh quiz, chấm tự luận/ảnh viết tay qua luồng OCR xác nhận; spaced repetition và progress dashboard. Backend dùng Supabase Auth/Postgres/pgvector/Storage, RPC retrieval tùy biến và LangChain cho orchestration/structured output."
 
 Nên có con số cụ thể nếu đo được, ví dụ: % câu trả lời đúng trên bộ test, thời gian phản hồi trung bình, số lượng tài liệu/định dạng hỗ trợ, số câu hỏi sinh ra mỗi tài liệu, độ chính xác OCR trên ảnh scan, độ tương quan giữa điểm LLM chấm và điểm người chấm thủ công (nếu đo thử).
 
@@ -305,14 +318,21 @@ Nên có con số cụ thể nếu đo được, ví dụ: % câu trả lời đ
 
 ## 8. Checklist tổng thể
 
-- [ ] Bước 1: Setup Supabase + retrieval hoạt động (chunking tự viết + LangChain)
-- [ ] Bước 2: LLM sinh câu trả lời
-- [ ] Bước 3: Trích dẫn nguồn
-- [ ] Bước 4: Đa file
-- [ ] Bước 5: FastAPI backend + React frontend cho Chat
-- [ ] Bước 6: Lộ trình học cá nhân hóa (API + React UI)
-- [ ] Bước 7: Sinh câu hỏi ôn tập (có giới hạn theo lượng kiến thức thực có)
-- [ ] Bước 8: React UI làm bài & tự chấm điểm (kể cả ảnh scan)
-- [ ] Bước 9: Cải thiện chất lượng (tùy chọn)
-- [ ] Bước 10: Đánh giá & Deploy (backend + frontend)
-- [ ] Viết README + mô tả CV
+- [ ] Bước 1: Schema v5 + Auth + RLS + private Storage
+- [ ] Bước 2: Ingestion jobs + document versioning + multilingual retrieval
+- [ ] Bước 3: Multi-document RAG + citation + abstain + evaluation
+- [ ] Bước 4: Group invitation bảo mật bằng token hash và verified email
+- [ ] Bước 5: PDF.js annotation highlight/note theo tọa độ chuẩn hóa
+- [ ] Bước 6: Topics + prerequisite + roadmap + lịch học
+- [ ] Bước 7: Question bank + quiz sessions + grading có version
+- [ ] Bước 8: Ảnh viết tay private + OCR confirmation + quyền xóa ảnh
+- [ ] Bước 9: Review states + progress dashboard có thể rebuild
+- [ ] Bước 10: Hardening + đánh giá + deploy + README/CV
+
+### Tiêu chí MVP hoàn thành
+- [ ] User ngoài project không thể đọc/ghi dữ liệu hoặc file của project bằng cả FastAPI và Supabase API.
+- [ ] Member chỉ học và CRUD annotation riêng; owner mới quản lý tài liệu, lịch chung, question generation và invitation.
+- [ ] Retrieval không trả chunk chéo project và trả `insufficient_evidence` khi nguồn không đủ.
+- [ ] Annotation không lệch sau reload/zoom/resize và không mất khi document có version mới.
+- [ ] Ảnh bài viết tay chỉ truy cập qua signed URL; bắt buộc xác nhận OCR trước khi chấm và có thể xóa ảnh.
+- [ ] Lịch sử quiz/review/progress không bị thay đổi khi tài liệu hoặc câu hỏi có version mới.

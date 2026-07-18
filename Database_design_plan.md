@@ -1,681 +1,845 @@
-# Thiết kế Database v3 — AI Study Assistant (RAGTutor)
+# Thiết kế Database v5 — AI Study Assistant (RAGTutor)
 
 > [!IMPORTANT]
-> **Cập nhật v3** (17/07/2026): Tích hợp 3 yêu cầu mới từ người dùng:
-> 1. Thêm bảng `users` — quản lý người dùng
-> 2. Thêm tính năng lịch học + chia sẻ nhóm (mức Đơn giản: chia sẻ project cho nhiều thành viên, mỗi người học riêng)
-> 3. Thêm khái niệm `projects` làm thực thể cha — bao bọc documents, lịch học, chatbot, notes
+> **Cập nhật v5 (18/07/2026):** MVP là ứng dụng multi-user và giữ ba chức năng bắt buộc: group invitation, PDF annotation theo tọa độ, chấm ảnh viết tay. Bản v5 đồng thời sửa các lỗi của v4 về LangChain/Supabase schema, RLS chưa đầy đủ, dữ liệu chéo project, document/question versioning, quiz session, spaced repetition và progress aggregate.
 
 ---
 
-## Thay đổi kiến trúc phân cấp (quan trọng nhất)
+## 1. Quyết định kiến trúc
 
-```
-TRƯỚC (v2):   user_id (cột đơn) → documents → chunks/topics/questions...
+- Supabase cung cấp Auth, Postgres/pgvector và private Storage; FastAPI là API duy nhất của ứng dụng React.
+- React gửi Supabase access token cho FastAPI. Backend xác minh JWT và kiểm tra project membership trên mọi request.
+- Service/secret key chỉ dùng trong backend cho ingestion và tác vụ hệ thống. Vì key này có thể bypass RLS, authorization ở FastAPI vẫn bắt buộc.
+- Không dùng trực tiếp schema mặc định của `LangChain SupabaseVectorStore`. Vector được lưu trong `chunks` và truy vấn qua RPC `match_chunks` tùy biến; LangChain chỉ dùng cho prompt, orchestration và structured output.
+- File PDF/docx và ảnh bài viết tay nằm trong private buckets. Database chỉ lưu object path; frontend nhận signed URL ngắn hạn sau khi backend kiểm tra quyền.
+- Mọi dữ liệu phát sinh từ AI phải lưu `model_name` và `prompt_version` để truy vết và tái lập kết quả.
 
-SAU (v3):     users
-                └── projects          ← thực thể cha MỚI
-                      ├── documents   ← tài liệu thuộc project
-                      ├── schedules   ← lịch học của project
-                      ├── notes       ← annotation trên tài liệu
-                      ├── chat_sessions
-                      ├── topics / questions / quiz_attempts
-                      └── project_members  ← chia sẻ nhóm
-```
+### Phân quyền MVP
 
----
+| Hành động | Owner | Member |
+|---|---:|---:|
+| Xem tài liệu, chat, làm quiz | ✅ | ✅ |
+| Tạo/sửa/xóa annotation của chính mình | ✅ | ✅ |
+| Upload/version/xóa tài liệu | ✅ | ❌ |
+| Sinh topic/question và quản lý lịch chung | ✅ | ❌ |
+| Mời/hủy lời mời/xóa member | ✅ | ❌ |
+| Xem annotation của người khác | ❌ | ❌ |
 
-## Tổng quan 11 bảng (tăng từ 7 lên 11)
-
-```
-Supabase Postgres
-├── users                ← [MỚI] quản lý tài khoản người dùng
-├── projects             ← [MỚI] không gian học tập của user
-├── project_members      ← [MỚI] chia sẻ project cho thành viên nhóm
-├── documents            ← [SỬA] thêm project_id
-├── chunks               ← không đổi
-├── topics               ← [SỬA] thêm project_id (để query nhanh)
-├── questions            ← [SỬA] thêm project_id
-├── quiz_attempts        ← [SỬA] thêm user_id (ai làm bài)
-├── schedules            ← [MỚI] lịch học / sự kiện
-├── chat_sessions        ← [SỬA] thêm project_id, bỏ document_id trực tiếp
-└── notes                ← [MỚI] annotation của người dùng trên tài liệu
-    chat_messages        ← không đổi (con của chat_sessions)
-```
+Owner luôn có một dòng `project_members.role = 'owner'`. Không hỗ trợ chuyển ownership trong MVP.
 
 ---
 
-## Proposed Changes
+## 2. Tổng quan 23 bảng
+
+```text
+Identity & collaboration
+├── users
+├── projects
+├── project_members
+└── project_invitations
+
+Documents & retrieval
+├── documents
+├── document_versions
+├── ingestion_jobs
+└── chunks
+
+Knowledge graph
+├── topics
+├── topic_sources
+└── topic_prerequisites
+
+Quiz & review
+├── questions
+├── question_sources
+├── quiz_sessions
+├── quiz_attempts
+└── review_states
+
+Learning & conversation
+├── schedules
+├── schedule_completions
+├── chat_sessions
+├── chat_messages
+├── notes
+├── study_events
+└── progress_snapshots
+```
+
+Không dùng UUID array như `topics.source_chunk_ids`; quan hệ source được chuẩn hóa thành link table để có foreign key và cascade rõ ràng.
 
 ---
 
-### Bảng 1 [MỚI]: `users` — Quản lý người dùng
-
-Lưu thông tin tài khoản. Dùng **Supabase Auth** để xử lý đăng ký/đăng nhập — bảng `users` này là bảng **profile** mở rộng, liên kết với `auth.users` của Supabase.
-
-```sql
-CREATE TABLE users (
-    id          UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
-    email       TEXT UNIQUE NOT NULL,
-    full_name   TEXT,
-    avatar_url  TEXT,
-    created_at  TIMESTAMPTZ DEFAULT now()
-);
-```
-
-**Giải thích:**
-- `id` trỏ vào `auth.users(id)` của Supabase — không cần tự quản lý password/token, Supabase Auth lo hết
-- Khi user đăng ký qua Supabase Auth, trigger tự động tạo dòng trong bảng `users` này
-- Bảng này chỉ lưu thông tin hiển thị (profile), không lưu thông tin xác thực
-
----
-
-### Bảng 2 [MỚI]: `projects` — Không gian học tập
-
-Mỗi project là một "phòng học" độc lập. Người dùng tạo project trước, sau đó upload tài liệu, tạo lịch học, chat trong đó.
-
-```sql
-CREATE TABLE projects (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    owner_id        UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    name            TEXT NOT NULL,              -- "Ôn thi Giải tích", "Học IELTS tháng 8"
-    description     TEXT,
-    target_score    NUMERIC(5,2),               -- mục tiêu điểm → dùng cho lộ trình học
-    exam_date       DATE,                       -- ngày thi / deadline → AI dùng để lên lịch
-    status          TEXT DEFAULT 'active' CHECK (status IN ('active', 'archived')),
-    created_at      TIMESTAMPTZ DEFAULT now(),
-    updated_at      TIMESTAMPTZ DEFAULT now()
-);
-CREATE INDEX idx_projects_owner ON projects (owner_id);
-```
-
-**Giải thích:**
-- `target_score` + `exam_date`: 2 thông tin đầu vào quan trọng nhất để AI lên lịch học và chọn độ sâu lộ trình
-- `status = 'archived'`: người dùng có thể lưu trữ project cũ thay vì xóa (giữ lịch sử)
-- `owner_id`: người tạo project — phân biệt với thành viên được mời vào
-
----
-
-### Bảng 3 [MỚI]: `project_members` — Thành viên nhóm học
-
-Cho phép chia sẻ project với người khác. Mỗi người học theo tiến độ riêng.
-
-```sql
-CREATE TABLE project_members (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    project_id  UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    role        TEXT DEFAULT 'member' CHECK (role IN ('owner', 'member')),
-    joined_at   TIMESTAMPTZ DEFAULT now(),
-    UNIQUE (project_id, user_id)               -- mỗi user chỉ join 1 lần
-);
-CREATE INDEX idx_members_project ON project_members (project_id);
-CREATE INDEX idx_members_user ON project_members (user_id);
-```
-
-**Giải thích:**
-- `role = 'owner'` | `'member'`: chỉ owner mới xóa project hoặc mời thêm người; member chỉ đọc tài liệu + học
-- `UNIQUE (project_id, user_id)`: constraint chống duplicate membership
-- Khi tạo project, tự động insert 1 dòng `role = 'owner'` cho người tạo
-
----
-
-### Bảng 4 [SỬA]: `documents` — Tài liệu trong project
-
-Thêm `project_id` và `user_id` (ai upload).
-
-```sql
-CREATE TABLE documents (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    project_id  UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,  -- [MỚI]
-    uploaded_by UUID REFERENCES users(id) ON DELETE SET NULL,             -- [MỚI]
-    filename    TEXT NOT NULL,
-    file_type   TEXT NOT NULL CHECK (file_type IN ('pdf', 'docx')),
-    file_size   INTEGER,
-    page_count  INTEGER,
-    status      TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'ready', 'error')),
-    created_at  TIMESTAMPTZ DEFAULT now()
-);
-CREATE INDEX idx_documents_project ON documents (project_id);
-```
-
----
-
-### Bảng 5: `chunks` — Không đổi
-
-Giữ nguyên, chỉ `document_id` trỏ về `documents` (đã có `project_id`) nên truy ngược được.
-
----
-
-### Bảng 6 [SỬA]: `topics` — Thêm project_id
-
-```sql
--- Thêm cột project_id vào topics để query nhanh hơn (không cần JOIN qua documents)
-ALTER TABLE topics ADD COLUMN project_id UUID REFERENCES projects(id) ON DELETE CASCADE;
-```
-
----
-
-### Bảng 7 [SỬA]: `questions` — Thêm project_id
-
-Tương tự, thêm `project_id` để query toàn bộ câu hỏi trong 1 project mà không cần JOIN nhiều bảng.
-
-```sql
-ALTER TABLE questions ADD COLUMN project_id UUID REFERENCES projects(id) ON DELETE CASCADE;
-```
-
----
-
-### Bảng 8 [SỬA]: `quiz_attempts` — Thêm user_id
-
-Cần biết **ai** làm bài trong nhóm học.
-
-```sql
-ALTER TABLE quiz_attempts ADD COLUMN user_id UUID REFERENCES users(id) ON DELETE SET NULL;
--- Index để xem lịch sử làm bài của 1 user trong 1 project
-CREATE INDEX idx_attempts_user ON quiz_attempts (user_id);
-```
-
----
-
-### Bảng 9 [MỚI]: `schedules` — Lịch học
-
-Hỗ trợ cả 2 chế độ: người dùng tự tạo sự kiện VÀ AI gợi ý lịch dựa trên `exam_date` + `target_score`.
-
-```sql
-CREATE TABLE schedules (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    project_id      UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    created_by      UUID REFERENCES users(id) ON DELETE SET NULL,
-
-    title           TEXT NOT NULL,              -- "Ôn chương 3: Tích phân", "Mock test lần 1"
-    description     TEXT,
-    topic_id        UUID REFERENCES topics(id) ON DELETE SET NULL,  -- gắn với chủ đề cụ thể
-
-    -- Thời gian
-    start_time      TIMESTAMPTZ NOT NULL,
-    end_time        TIMESTAMPTZ,
-
-    -- Phân loại sự kiện
-    event_type      TEXT DEFAULT 'study' CHECK (event_type IN ('study', 'quiz', 'review', 'deadline')),
-
-    -- AI hay người dùng tạo?
-    source          TEXT DEFAULT 'manual' CHECK (source IN ('manual', 'ai_suggested')),
-    is_completed    BOOLEAN DEFAULT false,
-
-    created_at      TIMESTAMPTZ DEFAULT now()
-);
-CREATE INDEX idx_schedules_project ON schedules (project_id, start_time);
-CREATE INDEX idx_schedules_topic ON schedules (topic_id);
-```
-
-**Giải thích:**
-- `event_type`: phân biệt buổi học lý thuyết vs làm quiz vs ôn lại vs deadline thi
-- `source = 'ai_suggested'`: đánh dấu sự kiện AI tạo ra — user có thể accept/reject/chỉnh sửa
-- `topic_id`: liên kết trực tiếp với chủ đề trong lộ trình học — click vào lịch biết học chủ đề gì
-- `is_completed`: theo dõi tiến độ hoàn thành lịch học
-
-**Luồng AI lên lịch:**
-```
-[project.exam_date + project.target_score] → [LLM nhận danh sách topics từ DB]
-    → [Phân bổ topics theo số ngày còn lại + độ khó] → [INSERT nhiều dòng vào schedules với source='ai_suggested']
-    → [React hiển thị calendar, user chấp nhận/chỉnh sửa]
-```
-
----
-
-### Bảng 10 [SỬA]: `chat_sessions` — Đổi từ document_id sang project_id
-
-Chat trong context của project (có thể hỏi về nhiều tài liệu trong project).
-
-```sql
--- Bảng chat_sessions cập nhật
-CREATE TABLE chat_sessions (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    project_id  UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,  -- [ĐỔI từ document_id]
-    user_id     UUID REFERENCES users(id) ON DELETE SET NULL,             -- [MỚI] ai đang chat
-    title       TEXT,
-    created_at  TIMESTAMPTZ DEFAULT now(),
-    updated_at  TIMESTAMPTZ DEFAULT now()
-);
-```
-
----
-
-### Bảng 11 [MỚI]: `notes` — Annotation trên tài liệu
-
-Người dùng ghi chú tay, gắn vào trang/đoạn cụ thể trong tài liệu.
-
-```sql
-CREATE TABLE notes (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    document_id     UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-    chunk_id        UUID REFERENCES chunks(id) ON DELETE SET NULL,   -- đoạn cụ thể (nếu có)
-
-    page_number     INTEGER,                    -- trang cụ thể trong tài liệu
-    content         TEXT NOT NULL,              -- nội dung ghi chú
-    color           TEXT DEFAULT 'yellow',      -- màu highlight: "yellow" | "green" | "blue" | "red"
-    position_data   JSONB,                      -- vị trí trên trang (x, y, width) cho PDF viewer sau này
-
-    created_at      TIMESTAMPTZ DEFAULT now(),
-    updated_at      TIMESTAMPTZ DEFAULT now()
-);
-CREATE INDEX idx_notes_document ON notes (document_id, page_number);
-CREATE INDEX idx_notes_user ON notes (user_id);
-```
-
-**Giải thích:**
-- `chunk_id`: nếu note gắn vào đoạn text đã được chunk, dễ tra cứu sau này
-- `color`: phân loại ghi chú theo màu — người dùng tự quy ước (vd: vàng = quan trọng, xanh = hiểu rồi)
-- `position_data JSONB`: lưu tọa độ annotation cho PDF viewer (tính năng nâng cao sau này)
-
----
-
-## Sơ đồ quan hệ (ERD) — đầy đủ v3
+## Sơ đồ quan hệ (ERD) — đầy đủ v5
 
 ```mermaid
 erDiagram
     users {
         uuid id PK
-        text email
+        citext email UK
         text full_name
         text avatar_url
+        text timezone
+        timestamptz created_at
+        timestamptz updated_at
     }
+
     projects {
         uuid id PK
         uuid owner_id FK
         text name
-        text description
         numeric target_score
         date exam_date
+        integer weekly_study_minutes
         text status
+        timestamptz created_at
+        timestamptz updated_at
     }
+
     project_members {
         uuid id PK
         uuid project_id FK
         uuid user_id FK
         text role
+        timestamptz joined_at
     }
+
+    project_invitations {
+        uuid id PK
+        uuid project_id FK
+        uuid invited_by FK
+        citext invited_email
+        text token_hash UK
+        text status
+        timestamptz expires_at
+        timestamptz accepted_at
+        timestamptz created_at
+    }
+
     documents {
         uuid id PK
         uuid project_id FK
-        uuid uploaded_by FK
-        text filename
-        text file_type
+        uuid created_by FK
+        uuid active_version_id FK
+        text display_name
         text status
+        timestamptz created_at
+        timestamptz updated_at
     }
-    chunks {
+
+    document_versions {
         uuid id PK
         uuid document_id FK
+        uuid project_id FK
+        integer version_number
+        text storage_path UK
+        text original_filename
+        text mime_type
+        integer file_size
+        integer page_count
+        text sha256
+        text status
+        text summary
+        text summary_status
+        text embedding_model
+        text chunker_version
+        timestamptz created_at
+        timestamptz processed_at
+    }
+
+    ingestion_jobs {
+        uuid id PK
+        uuid document_version_id FK
+        text status
+        text stage
+        integer progress_current
+        integer progress_total
+        integer attempt_count
+        integer max_attempts
+        text last_error
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    chunks {
+        uuid id PK
+        uuid project_id FK
+        uuid document_id FK
+        uuid document_version_id FK
         text content
         vector embedding
         integer page_number
+        text section_title
         integer chunk_index
+        jsonb source_spans
+        integer token_count
+        timestamptz created_at
     }
+
     topics {
         uuid id PK
         uuid project_id FK
-        uuid document_id FK
         text name
+        text description
         text difficulty
         text bloom_level
         boolean is_core
+        text model_name
+        text prompt_version
+        timestamptz created_at
     }
+
+    topic_sources {
+        uuid topic_id PK, FK
+        uuid chunk_id PK, FK
+        numeric relevance
+    }
+
+    topic_prerequisites {
+        uuid topic_id PK, FK
+        uuid prerequisite_topic_id PK, FK
+        numeric strength
+    }
+
     questions {
         uuid id PK
         uuid project_id FK
-        uuid document_id FK
         uuid topic_id FK
         text question_type
         text question_text
+        jsonb options
+        text correct_answer
+        text model_answer
+        jsonb key_points
+        jsonb rubric
+        numeric max_score
         vector question_embedding
+        text status
+        integer version
+        text model_name
+        text prompt_version
+        timestamptz created_at
     }
+
+    question_sources {
+        uuid question_id PK, FK
+        uuid chunk_id PK, FK
+    }
+
+    quiz_sessions {
+        uuid id PK
+        uuid project_id FK
+        uuid user_id FK
+        text status
+        uuid_array question_ids
+        numeric total_score
+        numeric max_score
+        timestamptz started_at
+        timestamptz submitted_at
+        timestamptz graded_at
+    }
+
     quiz_attempts {
         uuid id PK
+        uuid quiz_session_id FK
         uuid question_id FK
         uuid user_id FK
+        uuid project_id FK
+        text submission_type
         text user_answer
+        text ocr_raw_text
+        text ocr_confirmed_text
+        text image_storage_path
+        jsonb rubric_snapshot
         numeric score
+        boolean is_correct
+        text feedback
         text grading_method
+        text model_name
+        text prompt_version
+        text status
+        timestamptz submitted_at
+        timestamptz graded_at
     }
+
+    review_states {
+        uuid id PK
+        uuid user_id FK
+        uuid question_id FK
+        uuid project_id FK
+        timestamptz due_at
+        integer interval_days
+        integer repetitions
+        numeric ease_factor
+        numeric last_score
+        timestamptz last_reviewed_at
+    }
+
     schedules {
         uuid id PK
         uuid project_id FK
+        uuid created_by FK
         uuid topic_id FK
         text title
         timestamptz start_time
+        timestamptz end_time
         text event_type
         text source
-        boolean is_completed
+        text suggestion_status
+        timestamptz created_at
     }
+
+    schedule_completions {
+        uuid id PK
+        uuid schedule_id FK
+        uuid user_id FK
+        timestamptz completed_at
+        text note
+    }
+
     chat_sessions {
         uuid id PK
         uuid project_id FK
         uuid user_id FK
         text title
+        timestamptz created_at
+        timestamptz updated_at
     }
+
     chat_messages {
         uuid id PK
         uuid session_id FK
         text role
         text content
-        jsonb source_chunks
+        text status
+        jsonb citations
+        jsonb retrieval_params
+        text model_name
+        text prompt_version
+        uuid request_id
+        timestamptz created_at
     }
+
     notes {
         uuid id PK
-        uuid document_id FK
         uuid user_id FK
-        uuid chunk_id FK
+        uuid project_id FK
+        uuid document_id FK
+        uuid document_version_id FK
         integer page_number
+        text annotation_type
+        text selected_text
+        jsonb rectangles
         text content
         text color
+        integer version
+        timestamptz created_at
+        timestamptz updated_at
     }
 
-    users ||--o{ projects : "owns"
-    users ||--o{ project_members : "joins"
-    projects ||--o{ project_members : "has member"
-    projects ||--o{ documents : "contains"
-    projects ||--o{ topics : "has"
-    projects ||--o{ questions : "has"
-    projects ||--o{ schedules : "has"
-    projects ||--o{ chat_sessions : "has"
-    documents ||--o{ chunks : "split into"
-    documents ||--o{ notes : "annotated by"
-    chunks ||--o{ notes : "referenced in"
-    topics ||--o{ questions : "covers"
-    topics ||--o{ schedules : "scheduled as"
-    questions ||--o{ quiz_attempts : "answered by"
-    users ||--o{ quiz_attempts : "attempts"
-    chat_sessions ||--o{ chat_messages : "contains"
+    study_events {
+        uuid id PK
+        uuid user_id FK
+        uuid project_id FK
+        uuid topic_id FK
+        text event_type
+        integer duration_seconds
+        timestamptz occurred_at
+        uuid source_id
+        text idempotency_key UK
+        jsonb metadata
+    }
+
+    progress_snapshots {
+        uuid id PK
+        uuid user_id FK
+        uuid project_id FK
+        date snapshot_date
+        integer questions_attempted
+        integer questions_correct
+        numeric avg_score
+        integer topics_covered
+        integer study_minutes
+        timestamptz created_at
+    }
+
+    users ||--o{ projects : owns
+    users ||--o{ project_members : joins
+    projects ||--o{ project_members : has
+    users ||--o{ project_invitations : creates
+    projects ||--o{ project_invitations : has
+
+    users ||--o{ documents : creates
+    projects ||--o{ documents : contains
+    documents ||--o{ document_versions : versions
+    projects ||--o{ document_versions : scopes
+    document_versions ||--o{ ingestion_jobs : processes
+    documents ||--o{ chunks : contains
+    document_versions ||--o{ chunks : produces
+    projects ||--o{ chunks : scopes
+
+    projects ||--o{ topics : contains
+    topics ||--o{ topic_sources : cites
+    chunks ||--o{ topic_sources : supports
+    topics ||--o{ topic_prerequisites : requires
+    topics ||--o{ topic_prerequisites : prerequisite
+
+    projects ||--o{ questions : contains
+    topics o|--o{ questions : categorizes
+    questions ||--o{ question_sources : cites
+    chunks ||--o{ question_sources : supports
+    projects ||--o{ quiz_sessions : has
+    users ||--o{ quiz_sessions : starts
+    quiz_sessions ||--o{ quiz_attempts : contains
+    questions ||--o{ quiz_attempts : answered_as
+    users ||--o{ quiz_attempts : submits
+    projects ||--o{ quiz_attempts : scopes
+    users ||--o{ review_states : owns
+    questions ||--o{ review_states : schedules
+    projects ||--o{ review_states : scopes
+
+    projects ||--o{ schedules : contains
+    users ||--o{ schedules : creates
+    topics o|--o{ schedules : plans
+    schedules ||--o{ schedule_completions : completed_as
+    users ||--o{ schedule_completions : completes
+
+    projects ||--o{ chat_sessions : contains
+    users ||--o{ chat_sessions : owns
+    chat_sessions ||--o{ chat_messages : contains
+
+    users ||--o{ notes : writes
+    projects ||--o{ notes : scopes
+    documents ||--o{ notes : annotates
+    document_versions ||--o{ notes : anchors
+
+    users ||--o{ study_events : records
+    projects ||--o{ study_events : scopes
+    topics o|--o{ study_events : relates_to
+    users ||--o{ progress_snapshots : has
+    projects ||--o{ progress_snapshots : aggregates
 ```
+
+ERD thể hiện quan hệ logic và khóa chính/khóa ngoại quan trọng. Các composite foreign key, partial unique index, CHECK constraint và RLS được mô tả chi tiết trong Schema contract bên dưới.
 
 ---
 
-## SQL Script đầy đủ v3 — Chạy trong Supabase SQL Editor
+## 3. Schema contract
 
-```sql
--- =====================================================
--- RAGTutor Database Schema v3
--- =====================================================
+Các migration thực tế phải được lưu thành file versioned. SQL dưới đây là contract về cột, constraint và quan hệ; không chạy lại toàn bộ trên database đã có mà không tạo migration từ v4 → v5.
 
--- 0. Bật extensions
-CREATE EXTENSION IF NOT EXISTS vector;
+### 3.1 Identity và collaboration
 
--- 1. Bảng users (profile, liên kết với Supabase Auth)
-CREATE TABLE users (
-    id          UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
-    email       TEXT UNIQUE NOT NULL,
-    full_name   TEXT,
-    avatar_url  TEXT,
-    created_at  TIMESTAMPTZ DEFAULT now()
-);
+#### `users`
 
--- Trigger: tự tạo profile khi user đăng ký qua Supabase Auth
-CREATE OR REPLACE FUNCTION public.handle_new_user()
-RETURNS TRIGGER AS $$
-BEGIN
-    INSERT INTO public.users (id, email, full_name)
-    VALUES (NEW.id, NEW.email, NEW.raw_user_meta_data->>'full_name');
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
-
-CREATE TRIGGER on_auth_user_created
-    AFTER INSERT ON auth.users
-    FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
-
--- 2. Bảng projects
-CREATE TABLE projects (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    owner_id        UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    name            TEXT NOT NULL,
-    description     TEXT,
-    target_score    NUMERIC(5,2),
-    exam_date       DATE,
-    status          TEXT DEFAULT 'active' CHECK (status IN ('active', 'archived')),
-    created_at      TIMESTAMPTZ DEFAULT now(),
-    updated_at      TIMESTAMPTZ DEFAULT now()
-);
-CREATE INDEX idx_projects_owner ON projects (owner_id);
-
--- 3. Bảng project_members
-CREATE TABLE project_members (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    project_id  UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    role        TEXT DEFAULT 'member' CHECK (role IN ('owner', 'member')),
-    joined_at   TIMESTAMPTZ DEFAULT now(),
-    UNIQUE (project_id, user_id)
-);
-CREATE INDEX idx_members_project ON project_members (project_id);
-CREATE INDEX idx_members_user ON project_members (user_id);
-
--- 4. Bảng documents
-CREATE TABLE documents (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    project_id  UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    uploaded_by UUID REFERENCES users(id) ON DELETE SET NULL,
-    filename    TEXT NOT NULL,
-    file_type   TEXT NOT NULL CHECK (file_type IN ('pdf', 'docx')),
-    file_size   INTEGER,
-    page_count  INTEGER,
-    status      TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'ready', 'error')),
-    created_at  TIMESTAMPTZ DEFAULT now()
-);
-CREATE INDEX idx_documents_project ON documents (project_id);
-
--- 5. Bảng chunks
-CREATE TABLE chunks (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    document_id     UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-    content         TEXT NOT NULL,
-    embedding       VECTOR(384),
-    page_number     INTEGER,
-    section_title   TEXT,
-    chunk_index     INTEGER NOT NULL,
-    char_start      INTEGER,
-    char_end        INTEGER,
-    created_at      TIMESTAMPTZ DEFAULT now()
-);
-CREATE INDEX idx_chunks_embedding ON chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
-CREATE INDEX idx_chunks_document ON chunks (document_id);
-
--- 6. Bảng topics
-CREATE TABLE topics (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    project_id      UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    document_id     UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-    name            TEXT NOT NULL,
-    description     TEXT,
-    difficulty      TEXT NOT NULL CHECK (difficulty IN ('easy', 'medium', 'hard')),
-    bloom_level     TEXT NOT NULL CHECK (bloom_level IN ('remember', 'understand', 'apply', 'analyze', 'evaluate')),
-    source_chunk_ids UUID[],
-    is_core         BOOLEAN DEFAULT false,
-    created_at      TIMESTAMPTZ DEFAULT now()
-);
-CREATE INDEX idx_topics_project ON topics (project_id);
-CREATE INDEX idx_topics_bloom ON topics (bloom_level, difficulty);
-
--- 7. Bảng questions
-CREATE TABLE questions (
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    project_id          UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    document_id         UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-    topic_id            UUID REFERENCES topics(id) ON DELETE SET NULL,
-    source_chunk_id     UUID REFERENCES chunks(id) ON DELETE SET NULL,
-    question_type       TEXT NOT NULL CHECK (question_type IN ('mcq', 'essay')),
-    question_text       TEXT NOT NULL,
-    options             JSONB,
-    correct_answer      TEXT,
-    model_answer        TEXT,
-    key_points          JSONB,
-    rubric              TEXT,
-    max_score           NUMERIC(5,2) DEFAULT 10.0,
-    question_embedding  VECTOR(384),
-    created_at          TIMESTAMPTZ DEFAULT now()
-);
-CREATE INDEX idx_questions_embedding ON questions USING ivfflat (question_embedding vector_cosine_ops) WITH (lists = 50);
-CREATE INDEX idx_questions_project ON questions (project_id);
-CREATE INDEX idx_questions_type ON questions (question_type);
-
--- 8. Bảng quiz_attempts
-CREATE TABLE quiz_attempts (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    question_id     UUID NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
-    user_id         UUID REFERENCES users(id) ON DELETE SET NULL,
-    user_answer     TEXT,
-    submission_type TEXT DEFAULT 'text' CHECK (submission_type IN ('text', 'image_scan')),
-    image_url       TEXT,
-    ocr_raw_text    TEXT,
-    score           NUMERIC(5,2),
-    is_correct      BOOLEAN,
-    feedback        TEXT,
-    grading_method  TEXT CHECK (grading_method IN ('rule_based', 'llm_as_judge')),
-    submitted_at    TIMESTAMPTZ DEFAULT now()
-);
-CREATE INDEX idx_attempts_question ON quiz_attempts (question_id);
-CREATE INDEX idx_attempts_user ON quiz_attempts (user_id);
-
--- 9. Bảng schedules
-CREATE TABLE schedules (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    project_id      UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    created_by      UUID REFERENCES users(id) ON DELETE SET NULL,
-    topic_id        UUID REFERENCES topics(id) ON DELETE SET NULL,
-    title           TEXT NOT NULL,
-    description     TEXT,
-    start_time      TIMESTAMPTZ NOT NULL,
-    end_time        TIMESTAMPTZ,
-    event_type      TEXT DEFAULT 'study' CHECK (event_type IN ('study', 'quiz', 'review', 'deadline')),
-    source          TEXT DEFAULT 'manual' CHECK (source IN ('manual', 'ai_suggested')),
-    is_completed    BOOLEAN DEFAULT false,
-    created_at      TIMESTAMPTZ DEFAULT now()
-);
-CREATE INDEX idx_schedules_project ON schedules (project_id, start_time);
-CREATE INDEX idx_schedules_topic ON schedules (topic_id);
-
--- 10. Bảng chat_sessions
-CREATE TABLE chat_sessions (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    project_id  UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    user_id     UUID REFERENCES users(id) ON DELETE SET NULL,
-    title       TEXT,
-    created_at  TIMESTAMPTZ DEFAULT now(),
-    updated_at  TIMESTAMPTZ DEFAULT now()
-);
-CREATE INDEX idx_sessions_project ON chat_sessions (project_id);
-
--- 11. Bảng chat_messages
-CREATE TABLE chat_messages (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    session_id      UUID NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
-    role            TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
-    content         TEXT NOT NULL,
-    source_chunks   JSONB,
-    created_at      TIMESTAMPTZ DEFAULT now()
-);
-CREATE INDEX idx_messages_session ON chat_messages (session_id, created_at);
-
--- 12. Bảng notes (annotation)
-CREATE TABLE notes (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    document_id     UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-    chunk_id        UUID REFERENCES chunks(id) ON DELETE SET NULL,
-    page_number     INTEGER,
-    content         TEXT NOT NULL,
-    color           TEXT DEFAULT 'yellow' CHECK (color IN ('yellow', 'green', 'blue', 'red', 'purple')),
-    position_data   JSONB,
-    created_at      TIMESTAMPTZ DEFAULT now(),
-    updated_at      TIMESTAMPTZ DEFAULT now()
-);
-CREATE INDEX idx_notes_document ON notes (document_id, page_number);
-CREATE INDEX idx_notes_user ON notes (user_id);
-```
-
----
-
-## Row Level Security (RLS) — Bảo mật dữ liệu đa người dùng
-
-Vì có multi-user, cần bật RLS để mỗi user chỉ truy cập đúng dữ liệu của mình:
-
-```sql
--- Bật RLS cho tất cả bảng
-ALTER TABLE users ENABLE ROW LEVEL SECURITY;
-ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
-ALTER TABLE project_members ENABLE ROW LEVEL SECURITY;
-ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
-ALTER TABLE notes ENABLE ROW LEVEL SECURITY;
--- (thêm tương tự cho các bảng còn lại)
-
--- Ví dụ policy: user chỉ thấy project mình là thành viên
-CREATE POLICY "members_see_project"
-ON projects FOR SELECT
-USING (
-    id IN (
-        SELECT project_id FROM project_members
-        WHERE user_id = auth.uid()
-    )
-);
-
--- User chỉ thấy note của chính mình
-CREATE POLICY "own_notes_only"
-ON notes FOR ALL
-USING (user_id = auth.uid());
-```
-
----
-
-## Verification Plan
-
-### Kiểm tra sau khi chạy SQL
-1. **Supabase Dashboard → Table Editor** → kiểm tra 12 bảng (kể cả `chat_messages`) đã tạo đúng
-2. **Database → Extensions** → `vector` extension đã `Enabled`
-3. **Authentication → Providers** → bật Email/Password provider
-4. **Database → Triggers** → trigger `on_auth_user_created` đã tồn tại
-
-### Test luồng cơ bản
-```python
-# 1. Tạo project
-project = supabase.table("projects").insert({
-    "owner_id": user_id,
-    "name": "Ôn thi Giải tích",
-    "exam_date": "2026-08-15",
-    "target_score": 8.5
-}).execute()
-
-# 2. Thêm owner vào project_members
-supabase.table("project_members").insert({
-    "project_id": project.data[0]["id"],
-    "user_id": user_id,
-    "role": "owner"
-}).execute()
-
-# 3. Upload document vào project
-doc = supabase.table("documents").insert({
-    "project_id": project.data[0]["id"],
-    "uploaded_by": user_id,
-    "filename": "GiaiTich.pdf",
-    "file_type": "pdf"
-}).execute()
-```
-
----
-
-## Tổng kết thay đổi so với v2
-
-| Bảng | Trạng thái | Thay đổi chính |
+| Cột | Kiểu | Quy tắc |
 |---|---|---|
-| `users` | 🆕 Mới | Profile liên kết Supabase Auth |
-| `projects` | 🆕 Mới | Thực thể cha chứa toàn bộ |
-| `project_members` | 🆕 Mới | Chia sẻ nhóm học |
-| `documents` | ✏️ Sửa | Thêm `project_id`, `uploaded_by` |
-| `chunks` | ✅ Giữ nguyên | — |
-| `topics` | ✏️ Sửa | Thêm `project_id` |
-| `questions` | ✏️ Sửa | Thêm `project_id` |
-| `quiz_attempts` | ✏️ Sửa | Thêm `user_id` |
-| `schedules` | 🆕 Mới | Lịch học manual + AI |
-| `chat_sessions` | ✏️ Sửa | Đổi `document_id` → `project_id`, thêm `user_id` |
-| `chat_messages` | ✅ Giữ nguyên | — |
-| `notes` | 🆕 Mới | Annotation trên tài liệu |
+| `id` | UUID PK | FK `auth.users(id)`; cascade khi xóa tài khoản |
+| `email` | CITEXT UNIQUE | Email hiển thị/đối chiếu invitation; lấy từ Auth |
+| `full_name`, `avatar_url` | TEXT | Nullable |
+| `timezone` | TEXT | IANA timezone, mặc định `Asia/Ho_Chi_Minh` |
+| `created_at`, `updated_at` | TIMESTAMPTZ | `updated_at` có trigger |
+
+Trigger tạo profile phải là `SECURITY DEFINER SET search_path = public` và xử lý được trường hợp metadata thiếu.
+
+#### `projects`
+
+| Cột | Kiểu | Quy tắc |
+|---|---|---|
+| `id` | UUID PK | `gen_random_uuid()` |
+| `owner_id` | UUID NOT NULL | FK `users`; owner không được xóa khỏi membership |
+| `name`, `description` | TEXT | `name` bắt buộc |
+| `target_score` | NUMERIC(5,2) | Nullable, `0 <= target_score <= 100`; UI tự quy đổi thang điểm |
+| `exam_date` | DATE | Nullable |
+| `weekly_study_minutes` | INTEGER | Nullable, > 0 |
+| `status` | TEXT | `active`, `archived` |
+| timestamps | TIMESTAMPTZ | Có trigger cập nhật |
+
+Tạo project và owner membership phải nằm trong một database function/transaction.
+
+#### `project_members`
+
+- `id`, `project_id`, `user_id`, `role ('owner','member')`, `joined_at`.
+- Unique `(project_id, user_id)` và unique partial `(project_id) WHERE role='owner'`.
+- Trigger kiểm tra `projects.owner_id` khớp member có role owner.
+
+#### `project_invitations`
+
+| Cột | Kiểu | Quy tắc |
+|---|---|---|
+| `project_id`, `invited_by` | UUID | Owner tạo lời mời |
+| `invited_email` | CITEXT | Email đích đã normalize |
+| `token_hash` | TEXT UNIQUE | Chỉ lưu SHA-256/HMAC; raw token chỉ xuất hiện trong link |
+| `status` | TEXT | `pending`, `accepted`, `rejected`, `revoked`, `expired` |
+| `expires_at`, `accepted_at`, `created_at` | TIMESTAMPTZ | Link mặc định hết hạn sau 7 ngày |
+
+Unique partial `(project_id, invited_email) WHERE status='pending'`. Accept invitation phải khóa row và chạy transaction: kiểm tra pending, expiry, verified email → upsert membership → cập nhật accepted.
+
+### 3.2 Documents, Storage và retrieval
+
+#### `documents`
+
+Đây là thực thể logic ổn định, không đại diện một lần upload cụ thể.
+
+- `id`, `project_id`, `created_by`, `display_name`, `status ('active','archived')`, timestamps.
+- Unique `(id, project_id)` để làm đích cho composite foreign key.
+- `active_version_id` nullable và được cập nhật chỉ sau khi version mới xử lý thành công.
+
+#### `document_versions`
+
+| Cột | Kiểu | Quy tắc |
+|---|---|---|
+| `id`, `document_id`, `project_id` | UUID | Composite FK đảm bảo document thuộc đúng project |
+| `version_number` | INTEGER | Unique `(document_id, version_number)`, bắt đầu từ 1 |
+| `storage_path` | TEXT UNIQUE | Object trong bucket `documents` private |
+| `original_filename`, `mime_type` | TEXT | Chỉ PDF/DOCX đã kiểm tra MIME thực |
+| `file_size`, `page_count` | INTEGER | File size > 0 |
+| `sha256` | TEXT | Idempotency và phát hiện upload trùng |
+| `status` | TEXT | `pending`, `processing`, `ready`, `error`, `superseded` |
+| `summary`, `summary_status` | TEXT | Summary do worker tạo, không gọi Gemini từ DB trigger |
+| `embedding_model`, `chunker_version` | TEXT | Không trộn vector khác model/version |
+| `error_code`, `error_message` | TEXT | Thông báo vận hành, không chứa secret |
+| timestamps | TIMESTAMPTZ | Có `processed_at` |
+
+Unique `(document_id, sha256)` chống ingest cùng nội dung nhiều lần.
+
+#### `ingestion_jobs`
+
+- `id`, `document_version_id`, `status ('queued','running','succeeded','failed','cancelled')`.
+- `stage ('extract','chunk','embed','summarize')`, `progress_current`, `progress_total`, `attempt_count`, `max_attempts`, `last_error`, timestamps.
+- Một version chỉ có tối đa một job chưa kết thúc; retry tiếp tục cùng job hoặc tạo attempt log, không tạo chunks trùng.
+- Worker xóa chunks chưa hoàn tất trước khi retry trong một transaction giới hạn theo `document_version_id`.
+
+#### `chunks`
+
+| Cột | Kiểu | Quy tắc |
+|---|---|---|
+| `id`, `project_id`, `document_id`, `document_version_id` | UUID | Composite FKs chống dữ liệu chéo project/document |
+| `content` | TEXT | Không rỗng |
+| `embedding` | VECTOR(384) | Cùng model với document version |
+| `page_number`, `section_title`, `chunk_index` | INTEGER/TEXT | Unique `(document_version_id, chunk_index)` |
+| `source_spans` | JSONB | Danh sách `{page, char_start, char_end}`; hỗ trợ overlap |
+| `token_count` | INTEGER | Đo bằng tokenizer embedding model |
+| `created_at` | TIMESTAMPTZ | — |
+
+Dùng HNSW cosine index sau khi benchmark. RPC phải filter project và version active trước khi trả kết quả:
+
+```sql
+CREATE FUNCTION match_chunks(
+    p_project_id UUID,
+    p_query_embedding VECTOR(384),
+    p_match_count INTEGER DEFAULT 8,
+    p_match_threshold DOUBLE PRECISION DEFAULT 0.70
+)
+RETURNS TABLE (
+    id UUID,
+    document_id UUID,
+    document_version_id UUID,
+    content TEXT,
+    page_number INTEGER,
+    source_spans JSONB,
+    similarity DOUBLE PRECISION
+)
+LANGUAGE sql STABLE SECURITY INVOKER
+AS $$
+    SELECT c.id, c.document_id, c.document_version_id, c.content,
+           c.page_number, c.source_spans,
+           1 - (c.embedding <=> p_query_embedding) AS similarity
+    FROM chunks c
+    JOIN documents d ON d.id = c.document_id
+                    AND d.project_id = c.project_id
+                    AND d.active_version_id = c.document_version_id
+    JOIN document_versions dv ON dv.id = c.document_version_id
+    WHERE c.project_id = p_project_id
+      AND d.status = 'active'
+      AND dv.status = 'ready'
+      AND 1 - (c.embedding <=> p_query_embedding) >= p_match_threshold
+    ORDER BY c.embedding <=> p_query_embedding
+    LIMIT LEAST(p_match_count, 50);
+$$;
+```
+
+Backend vẫn kiểm tra caller là member trước khi gọi RPC. Không cấp execute cho `anon`.
+
+### 3.3 Topics và knowledge graph
+
+#### `topics`
+
+- `id`, `project_id`, `name`, `description`, `difficulty`, `bloom_level`, `is_core`, `model_name`, `prompt_version`, timestamps.
+- Topic ở cấp project, không bắt buộc thuộc đúng một document để hỗ trợ multi-document roadmap.
+
+#### `topic_sources`
+
+- `topic_id`, `chunk_id`, `relevance`; composite PK `(topic_id, chunk_id)`.
+- Trigger/composite constraint đảm bảo topic và chunk cùng project.
+
+#### `topic_prerequisites`
+
+- `topic_id`, `prerequisite_topic_id`, `strength`; composite PK.
+- Không cho self-reference; service phải phát hiện cycle trước khi lưu roadmap.
+
+### 3.4 Question, quiz và spaced repetition
+
+#### `questions`
+
+- `id`, `project_id`, `topic_id`, `question_type ('mcq','essay')`, `question_text`.
+- `options JSONB`, `correct_answer`, `model_answer`, `key_points JSONB`, `rubric JSONB`, `max_score`.
+- `question_embedding VECTOR(384)`, `status ('active','retired')`, `version`, `model_name`, `prompt_version`, timestamps.
+- Không cascade lịch sử khi retire/re-upload. Question cũ được giữ ở trạng thái retired.
+- CHECK theo loại: MCQ cần 4 options và correct answer; essay cần rubric/key points.
+
+#### `question_sources`
+
+- `question_id`, `chunk_id`; composite PK và constraint cùng project.
+- Cho phép một question tổng hợp evidence từ nhiều chunk/document.
+
+#### `quiz_sessions`
+
+| Cột | Kiểu | Quy tắc |
+|---|---|---|
+| `id`, `project_id`, `user_id` | UUID | Một lần làm bài của một user |
+| `status` | TEXT | `in_progress`, `submitted`, `graded`, `abandoned` |
+| `question_ids` | UUID[] | Snapshot thứ tự câu tại lúc bắt đầu; chỉ chứa question cùng project |
+| `started_at`, `submitted_at`, `graded_at` | TIMESTAMPTZ | — |
+| `total_score`, `max_score` | NUMERIC | Tổng từ attempts |
+
+Không thêm/xóa câu khỏi session sau khi bắt đầu.
+
+#### `quiz_attempts`
+
+Mỗi row là câu trả lời cho một question trong quiz session.
+
+- `id`, `quiz_session_id`, `question_id`, `user_id`, `project_id`; unique `(quiz_session_id, question_id)`.
+- Snapshot bắt buộc: `question_text_snapshot`, `options_snapshot`, `rubric_snapshot`, `max_score_snapshot`.
+- `submission_type ('text','image_scan')`, `user_answer`, `ocr_raw_text`, `ocr_confirmed_text`.
+- `image_storage_path` trỏ bucket private; `image_deleted_at` cho phép xóa ảnh nhưng giữ kết quả.
+- `ocr_uncertain_regions JSONB`, `score`, `is_correct`, `feedback`, `grading_method`.
+- `model_name`, `prompt_version`, `status ('draft','ocr_pending_confirmation','submitted','graded','error')`, timestamps.
+- Chỉ chấm image scan khi status đã qua bước xác nhận OCR.
+
+#### `review_states`
+
+- `user_id`, `question_id`, `project_id` là unique state cho một user-question.
+- `due_at`, `interval_days`, `repetitions`, `ease_factor`, `last_score`, `last_reviewed_at`.
+- Update state sau attempt graded trong transaction; không lưu due date trên từng attempt.
+- Danh sách đến hạn được query khi mở app hoặc bằng Supabase Cron/worker thật, không chạy cron trong process FastAPI free-tier.
+
+### 3.5 Lịch, chat, annotation và progress
+
+#### `schedules`
+
+- `id`, `project_id`, `created_by`, `topic_id`, title/description, start/end time.
+- `event_type ('study','quiz','review','deadline')`, `source ('manual','ai_suggested')`.
+- `suggestion_status ('suggested','accepted','rejected')`; manual event mặc định accepted.
+- CHECK `end_time IS NULL OR end_time > start_time`.
+
+#### `schedule_completions`
+
+- `schedule_id`, `user_id`, `completed_at`, `note`; unique `(schedule_id, user_id)`.
+- Chỉ member của project chứa schedule được tạo completion.
+
+#### `chat_sessions` và `chat_messages`
+
+- Session: `id`, `project_id`, `user_id`, title, timestamps.
+- Message: `session_id`, `role ('user','assistant','system')`, `content`, `status`, timestamps.
+- Assistant message lưu `citations JSONB`, `retrieval_params JSONB`, `model_name`, `prompt_version` và `request_id`.
+- Citations chứa immutable `document_version_id`, `chunk_id`, file/page/source spans và similarity.
+
+#### `notes` — PDF annotation riêng tư
+
+| Cột | Kiểu | Quy tắc |
+|---|---|---|
+| `id`, `user_id`, `project_id`, `document_id`, `document_version_id` | UUID | Composite FKs chống annotation chéo project/version |
+| `page_number` | INTEGER | >= 1 |
+| `annotation_type` | TEXT | `text_highlight` hoặc `rectangle` |
+| `selected_text` | TEXT | Nullable cho rectangle |
+| `rectangles` | JSONB | Mảng `{x,y,width,height}` chuẩn hóa trong khoảng `0..1` |
+| `content` | TEXT | Note của user, có thể rỗng nếu chỉ highlight |
+| `color` | TEXT | Danh sách màu cho phép |
+| timestamps | TIMESTAMPTZ | Có optimistic `version` hoặc `updated_at` check |
+
+RLS chỉ cho `user_id = auth.uid()` đọc/ghi. Annotation luôn gắn document version cũ; không tự chuyển tọa độ khi có version mới.
+
+#### `study_events`
+
+- Dữ liệu activity thô: `user_id`, `project_id`, `event_type`, `topic_id`, `duration_seconds`, `occurred_at`, `source_id`, `metadata`.
+- Unique idempotency key cho event phát sinh từ quiz/schedule để retry không cộng hai lần.
+
+#### `progress_snapshots`
+
+- `user_id`, `project_id`, `snapshot_date`, attempted/correct/avg score/topics covered/study minutes.
+- Unique `(user_id, project_id, snapshot_date)`.
+- Là aggregate cache từ quiz sessions, review states, schedule completions và study events; job phải có thể rebuild toàn bộ ngày, không cộng dồn mù quáng.
+
+---
+
+## 4. Storage design
+
+### Bucket `documents` — private
+
+```text
+projects/{project_id}/documents/{document_id}/versions/{version_id}/{safe_filename}
+```
+
+Chỉ owner upload/delete. Member nhận signed URL sau khi backend xác nhận membership.
+
+### Bucket `quiz-submissions` — private
+
+```text
+users/{user_id}/projects/{project_id}/quiz-sessions/{session_id}/{attempt_id}.{ext}
+```
+
+- Chỉ chấp nhận JPEG/PNG/WebP sau khi kiểm tra MIME thực và giới hạn dung lượng.
+- Signed URL có thời hạn ngắn, không lưu public URL trong database.
+- API xóa ảnh xóa Storage object và set `image_storage_path = NULL`, `image_deleted_at = now()`; vẫn giữ OCR confirmed text, score và feedback.
+- Job reconciliation định kỳ phát hiện orphan object hoặc database row trỏ tới object không tồn tại.
+
+---
+
+## 5. RLS và authorization
+
+### Helper functions
+
+Tạo các function trong schema không expose trực tiếp, dùng `SECURITY DEFINER SET search_path` cố định:
+
+- `is_project_member(project_id, user_id)`.
+- `is_project_owner(project_id, user_id)`.
+- `create_project_with_owner(...)`.
+- `accept_project_invitation(raw_token)`; function hash token, lock row và kiểm tra verified email.
+
+### Policy matrix
+
+| Nhóm bảng | SELECT | INSERT/UPDATE/DELETE |
+|---|---|---|
+| Project và nội dung học chung | Project member | Owner; riêng chat/attempt/completion theo user |
+| Invitations | Owner; người nhận chỉ qua accept function | Owner tạo/revoke; accept qua function |
+| Notes | Chính user | Chính user và phải là project member |
+| Quiz sessions/attempts/review states | Chính user | Chính user; grading field chỉ backend/system cập nhật |
+| Progress/study events | Chính user | Backend/system; user không sửa aggregate trực tiếp |
+| Chunks/jobs/document versions | Project member đọc bản ready | Owner tạo request; worker/service xử lý |
+
+Tất cả 23 bảng trong `public` phải `ENABLE ROW LEVEL SECURITY`; không để placeholder “thêm tương tự”. Migration test phải chạy bằng anon, authenticated user A/B, owner, member và service role.
+
+---
+
+## 6. API/data-flow bắt buộc
+
+### Invitation
+
+```text
+POST /projects/{id}/invitations
+GET  /projects/{id}/invitations
+DELETE /projects/{id}/invitations/{invitation_id}
+GET  /invitations/{raw_token}
+POST /invitations/{raw_token}/accept
+POST /invitations/{raw_token}/reject
+```
+
+Không trả `token_hash` qua API. Endpoint preview chỉ trả project name, inviter và expiry sau khi token hợp lệ.
+
+### Documents và jobs
+
+```text
+POST /projects/{id}/documents
+POST /documents/{id}/versions
+GET  /ingestion-jobs/{job_id}
+POST /ingestion-jobs/{job_id}/retry
+GET  /document-versions/{id}/signed-url
+```
+
+Upload trả `202 Accepted` cùng `document_id`, `version_id`, `job_id`; không giữ HTTP request đến khi embedding xong.
+
+### Annotation
+
+```text
+GET    /document-versions/{id}/annotations?page={n}
+POST   /document-versions/{id}/annotations
+PATCH  /annotations/{id}
+DELETE /annotations/{id}
+```
+
+Payload rectangle dùng số chuẩn hóa `0..1`; backend validate mọi tọa độ và page number.
+
+### Quiz và ảnh viết tay
+
+```text
+POST /projects/{id}/quiz-sessions
+POST /quiz-sessions/{id}/answers
+POST /quiz-sessions/{id}/answers/scan
+POST /quiz-sessions/{id}/answers/{attempt_id}/confirm-ocr
+DELETE /quiz-attempts/{attempt_id}/image
+POST /quiz-sessions/{id}/submit
+```
+
+Upload scan trả attempt ở trạng thái `ocr_pending_confirmation`. Confirm OCR mới chuyển sang submitted/grading. Các endpoint dùng idempotency key.
+
+---
+
+## 7. Migration từ v4 và thứ tự triển khai
+
+1. Chụp schema hiện tại và tạo migration versioned; không chạy script `CREATE TABLE` cũ trên database đang có.
+2. Tạo extensions `vector`, `citext`, helper functions và trigger timestamps.
+3. Tạo bảng mới, backfill `documents` thành logical document + version 1.
+4. Chuyển chunk sang `document_version_id`, `source_spans` và model metadata; re-embed bằng multilingual model trước khi bật version active.
+5. Chuyển `topics.source_chunk_ids` và question source đơn thành link tables.
+6. Tạo quiz sessions cho attempt cũ theo từng user/time window; snapshot question/rubric.
+7. Chuyển due date mới nhất của mỗi user-question sang `review_states`; bỏ due date khỏi attempt sau khi kiểm chứng.
+8. Chuyển `notes.position_data` sang rectangles chuẩn hóa nếu dữ liệu cũ có đủ page dimensions; nếu không, giữ legacy read-only.
+9. Bật RLS và policies trong cùng release với backend authorization; chạy test hai user trước khi deploy.
+10. Sau khi đối chiếu row counts và test rollback, mới xóa cột v4 không còn dùng.
+
+---
+
+## 8. Verification và acceptance tests
+
+### Schema/integrity
+
+- Có đúng 23 bảng ứng dụng, tất cả bật RLS và không có policy placeholder.
+- Không insert được chunk/topic/question/note có project hoặc document version không khớp.
+- Một project chỉ có một owner; một email/project chỉ có một invitation pending.
+- Retry ingestion không tạo duplicate version/chunk.
+
+### Authorization
+
+- User ngoài project không đọc được project, file, chunks, chat, quiz, lịch hoặc signed URL.
+- Member đọc tài liệu nhưng không upload/xóa, sinh question, sửa lịch chung hoặc mời người.
+- Owner không đọc được annotation hay ảnh bài làm riêng của member ngoài các dữ liệu kết quả được sản phẩm cho phép.
+
+### Retrieval/versioning
+
+- `match_chunks` không trả dữ liệu chéo project hoặc version superseded.
+- Citation mở đúng file, version, trang và source spans.
+- Question/document retire không xóa hoặc làm thay đổi lịch sử quiz.
+
+### Invitation
+
+- Token sai, hết hạn, revoked, dùng lại hoặc email không khớp đều bị từ chối.
+- Hai request accept đồng thời chỉ tạo một membership.
+
+### Annotation
+
+- Rectangles giữ đúng vị trí sau reload, zoom và resize.
+- Hai user annotation cùng trang không nhìn thấy dữ liệu của nhau.
+- Annotation version cũ vẫn mở đúng PDF cũ sau khi upload version mới.
+
+### Ảnh viết tay
+
+- File giả MIME, quá dung lượng hoặc sai định dạng bị chặn trước OCR.
+- Ảnh không có URL public; signed URL hết hạn và không dùng được bởi user ngoài project.
+- Không thể chấm trước bước xác nhận OCR; retry không tạo file/attempt trùng.
+- Xóa ảnh làm object không còn truy cập được nhưng giữ confirmed text, score và feedback.
+
+### Progress/review
+
+- Mỗi user-question có đúng một review state và không tạo nhiều lịch ôn trùng.
+- Rebuild progress snapshot từ activity thô cho kết quả giống dashboard hiện tại.
+
+---
+
+## 9. Ngoài MVP
+
+- Export báo cáo PDF.
+- XP, checkpoint mở khóa và leaderboard.
+- Chia sẻ annotation giữa thành viên.
+- Vẽ tự do trên PDF.
+- Tự động chuyển annotation sang tọa độ của document version mới.
