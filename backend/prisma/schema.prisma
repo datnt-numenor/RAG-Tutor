@@ -1,0 +1,525 @@
+// Prisma schema — RAGTutor v5
+// ORM: prisma-client-py  (pip install prisma)
+// DB:  Supabase Postgres + pgvector
+// Run: prisma generate --schema=prisma/schema.prisma
+
+generator client {
+  provider             = "prisma-client-py"
+  interface            = "asyncio"
+  recursive_type_depth = 5
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─────────────────────────────────────────────
+// 1. Identity & Collaboration
+// ─────────────────────────────────────────────
+
+model User {
+  id         String   @id @db.Uuid
+  email      String   @unique @db.VarChar(255)
+  full_name  String?
+  avatar_url String?
+  timezone   String   @default("Asia/Ho_Chi_Minh")
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  updated_at DateTime @updatedAt @db.Timestamptz(6)
+
+  owned_projects     Project[]           @relation("ProjectOwner")
+  memberships        ProjectMember[]
+  sent_invitations   ProjectInvitation[] @relation("InvitedBy")
+  documents          Document[]          @relation("DocumentCreator")
+  chat_sessions      ChatSession[]
+  quiz_sessions      QuizSession[]
+  quiz_attempts      QuizAttempt[]
+  review_states      ReviewState[]
+  schedules          Schedule[]          @relation("ScheduleCreator")
+  completions        ScheduleCompletion[]
+  notes              Note[]
+  study_events       StudyEvent[]
+  progress_snapshots ProgressSnapshot[]
+
+  @@map("users")
+}
+
+model Project {
+  id                    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  owner_id              String    @db.Uuid
+  name                  String
+  description           String?
+  target_score          Decimal?  @db.Decimal(5, 2)
+  exam_date             DateTime? @db.Date
+  weekly_study_minutes  Int?
+  status                String    @default("active")
+  created_at            DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime  @updatedAt @db.Timestamptz(6)
+
+  owner              User                @relation("ProjectOwner", fields: [owner_id], references: [id])
+  members            ProjectMember[]
+  invitations        ProjectInvitation[]
+  documents          Document[]
+  document_versions  DocumentVersion[]
+  chunks             Chunk[]
+  topics             Topic[]
+  questions          Question[]
+  quiz_sessions      QuizSession[]
+  quiz_attempts      QuizAttempt[]
+  review_states      ReviewState[]
+  schedules          Schedule[]
+  chat_sessions      ChatSession[]
+  notes              Note[]
+  study_events       StudyEvent[]
+  progress_snapshots ProgressSnapshot[]
+
+  @@map("projects")
+}
+
+model ProjectMember {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  project_id String   @db.Uuid
+  user_id    String   @db.Uuid
+  role       String   // 'owner' | 'member'
+  joined_at  DateTime @default(now()) @db.Timestamptz(6)
+
+  project Project @relation(fields: [project_id], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@unique([project_id, user_id])
+  @@map("project_members")
+}
+
+model ProjectInvitation {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  project_id     String    @db.Uuid
+  invited_by     String    @db.Uuid
+  invited_email  String    @db.VarChar(255)
+  token_hash     String    @unique
+  status         String    @default("pending") // pending|accepted|rejected|revoked|expired
+  expires_at     DateTime  @db.Timestamptz(6)
+  accepted_at    DateTime? @db.Timestamptz(6)
+  created_at     DateTime  @default(now()) @db.Timestamptz(6)
+
+  project  Project @relation(fields: [project_id], references: [id], onDelete: Cascade)
+  inviter  User    @relation("InvitedBy", fields: [invited_by], references: [id])
+
+  @@map("project_invitations")
+}
+
+// ─────────────────────────────────────────────
+// 2. Documents & Retrieval
+// ─────────────────────────────────────────────
+
+model Document {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  project_id        String    @db.Uuid
+  created_by        String    @db.Uuid
+  active_version_id String?   @db.Uuid
+  display_name      String
+  status            String    @default("active") // active|deleting
+  created_at        DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime  @updatedAt @db.Timestamptz(6)
+
+  project          Project          @relation(fields: [project_id], references: [id], onDelete: Cascade)
+  creator          User             @relation("DocumentCreator", fields: [created_by], references: [id])
+  versions         DocumentVersion[] @relation("DocumentVersions")
+  active_version   DocumentVersion? @relation("ActiveVersion", fields: [active_version_id], references: [id])
+  chunks           Chunk[]
+  notes            Note[]
+
+  @@map("documents")
+}
+
+model DocumentVersion {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  document_id       String    @db.Uuid
+  project_id        String    @db.Uuid
+  version_number    Int
+  storage_path      String    @unique
+  original_filename String
+  mime_type         String
+  file_size         Int
+  page_count        Int?
+  sha256            String
+  status            String    @default("pending") // pending|processing|ready|error|superseded
+  summary           String?
+  summary_status    String?
+  embedding_model   String?
+  chunker_version   String?
+  error_code        String?
+  error_message     String?
+  created_at        DateTime  @default(now()) @db.Timestamptz(6)
+  processed_at      DateTime? @db.Timestamptz(6)
+
+  document       Document      @relation("DocumentVersions", fields: [document_id], references: [id], onDelete: Cascade)
+  project        Project       @relation(fields: [project_id], references: [id])
+  active_for     Document[]    @relation("ActiveVersion")
+  jobs           DocumentJob[]
+  chunks         Chunk[]
+  notes          Note[]
+
+  @@unique([document_id, version_number])
+  @@unique([document_id, sha256])
+  @@map("document_versions")
+}
+
+model DocumentJob {
+  id                  String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  document_id         String    @db.Uuid  // No FK — survives document deletion
+  document_version_id String?   @db.Uuid
+  job_type            String    // ingest|delete
+  status              String    @default("queued") // queued|running|succeeded|failed|cancelled
+  stage               String?
+  progress_current    Int       @default(0)
+  progress_total      Int       @default(0)
+  attempt_count       Int       @default(0)
+  max_attempts        Int       @default(3)
+  last_error          String?
+  created_at          DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime  @updatedAt @db.Timestamptz(6)
+
+  document_version DocumentVersion? @relation(fields: [document_version_id], references: [id], onDelete: SetNull)
+
+  @@map("document_jobs")
+}
+
+model Chunk {
+  id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  project_id          String   @db.Uuid
+  document_id         String   @db.Uuid
+  document_version_id String   @db.Uuid
+  content             String
+  // embedding VECTOR(384) — managed via raw SQL / Supabase RPC, not Prisma
+  page_number         Int?
+  section_title       String?
+  chunk_index         Int
+  source_spans        Json?
+  token_count         Int?
+  created_at          DateTime @default(now()) @db.Timestamptz(6)
+
+  project          Project         @relation(fields: [project_id], references: [id])
+  document         Document        @relation(fields: [document_id], references: [id], onDelete: Cascade)
+  document_version DocumentVersion @relation(fields: [document_version_id], references: [id], onDelete: Cascade)
+  topic_sources    TopicSource[]
+  question_sources QuestionSource[]
+
+  @@unique([document_version_id, chunk_index])
+  @@map("chunks")
+}
+
+// ─────────────────────────────────────────────
+// 3. Knowledge Graph
+// ─────────────────────────────────────────────
+
+model Topic {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  project_id     String   @db.Uuid
+  name           String
+  description    String?
+  difficulty     String?
+  bloom_level    String?
+  is_core        Boolean  @default(false)
+  model_name     String?
+  prompt_version String?
+  created_at     DateTime @default(now()) @db.Timestamptz(6)
+
+  project       Project          @relation(fields: [project_id], references: [id], onDelete: Cascade)
+  sources       TopicSource[]
+  prerequisites TopicPrerequisite[] @relation("TopicPrereqs")
+  is_prereq_for TopicPrerequisite[] @relation("PrereqOf")
+  questions     Question[]
+  schedules     Schedule[]
+  study_events  StudyEvent[]
+
+  @@map("topics")
+}
+
+model TopicSource {
+  topic_id  String  @db.Uuid
+  chunk_id  String  @db.Uuid
+  relevance Decimal @default(1.0) @db.Decimal(4, 3)
+
+  topic Topic @relation(fields: [topic_id], references: [id], onDelete: Cascade)
+  chunk Chunk @relation(fields: [chunk_id], references: [id], onDelete: Cascade)
+
+  @@id([topic_id, chunk_id])
+  @@map("topic_sources")
+}
+
+model TopicPrerequisite {
+  topic_id              String  @db.Uuid
+  prerequisite_topic_id String  @db.Uuid
+  strength              Decimal @default(1.0) @db.Decimal(4, 3)
+
+  topic      Topic @relation("TopicPrereqs", fields: [topic_id], references: [id], onDelete: Cascade)
+  prereq     Topic @relation("PrereqOf", fields: [prerequisite_topic_id], references: [id], onDelete: Cascade)
+
+  @@id([topic_id, prerequisite_topic_id])
+  @@map("topic_prerequisites")
+}
+
+// ─────────────────────────────────────────────
+// 4. Quiz & Spaced Repetition
+// ─────────────────────────────────────────────
+
+model Question {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  project_id     String   @db.Uuid
+  topic_id       String?  @db.Uuid
+  question_type  String   // mcq|essay
+  question_text  String
+  options        Json?
+  correct_answer String?
+  model_answer   String?
+  key_points     Json?
+  rubric         Json?
+  max_score      Decimal  @default(1.0) @db.Decimal(6, 2)
+  // question_embedding VECTOR(384) — managed via raw SQL
+  status         String   @default("active") // active|retired
+  version        Int      @default(1)
+  model_name     String?
+  prompt_version String?
+  created_at     DateTime @default(now()) @db.Timestamptz(6)
+
+  project       Project          @relation(fields: [project_id], references: [id], onDelete: Cascade)
+  topic         Topic?           @relation(fields: [topic_id], references: [id], onDelete: SetNull)
+  sources       QuestionSource[]
+  attempts      QuizAttempt[]
+  review_states ReviewState[]
+
+  @@map("questions")
+}
+
+model QuestionSource {
+  question_id String @db.Uuid
+  chunk_id    String @db.Uuid
+
+  question Question @relation(fields: [question_id], references: [id], onDelete: Cascade)
+  chunk    Chunk    @relation(fields: [chunk_id], references: [id], onDelete: Cascade)
+
+  @@id([question_id, chunk_id])
+  @@map("question_sources")
+}
+
+model QuizSession {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  project_id   String    @db.Uuid
+  user_id      String    @db.Uuid
+  status       String    @default("in_progress") // in_progress|submitted|graded|abandoned
+  question_ids String[]  @db.Uuid
+  total_score  Decimal?  @db.Decimal(8, 2)
+  max_score    Decimal?  @db.Decimal(8, 2)
+  started_at   DateTime  @default(now()) @db.Timestamptz(6)
+  submitted_at DateTime? @db.Timestamptz(6)
+  graded_at    DateTime? @db.Timestamptz(6)
+
+  project  Project       @relation(fields: [project_id], references: [id])
+  user     User          @relation(fields: [user_id], references: [id])
+  attempts QuizAttempt[]
+
+  @@map("quiz_sessions")
+}
+
+model QuizAttempt {
+  id                       String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  quiz_session_id          String    @db.Uuid
+  question_id              String?   @db.Uuid
+  user_id                  String    @db.Uuid
+  project_id               String    @db.Uuid
+  submission_type          String    @default("text") // text|image_scan
+  question_text_snapshot   String
+  options_snapshot         Json?
+  rubric_snapshot          Json?
+  max_score_snapshot       Decimal   @db.Decimal(6, 2)
+  user_answer              String?
+  ocr_raw_text             String?
+  ocr_confirmed_text       String?
+  ocr_uncertain_regions    Json?
+  image_storage_path       String?
+  image_deleted_at         DateTime? @db.Timestamptz(6)
+  score                    Decimal?  @db.Decimal(6, 2)
+  is_correct               Boolean?
+  feedback                 String?
+  grading_method           String?
+  model_name               String?
+  prompt_version           String?
+  status                   String    @default("draft") // draft|ocr_pending_confirmation|submitted|graded|error
+  submitted_at             DateTime? @db.Timestamptz(6)
+  graded_at                DateTime? @db.Timestamptz(6)
+
+  session  QuizSession @relation(fields: [quiz_session_id], references: [id], onDelete: Cascade)
+  question Question?   @relation(fields: [question_id], references: [id], onDelete: SetNull)
+  user     User        @relation(fields: [user_id], references: [id])
+  project  Project     @relation(fields: [project_id], references: [id])
+
+  @@map("quiz_attempts")
+}
+
+model ReviewState {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id         String    @db.Uuid
+  question_id     String    @db.Uuid
+  project_id      String    @db.Uuid
+  due_at          DateTime  @db.Timestamptz(6)
+  interval_days   Int       @default(1)
+  repetitions     Int       @default(0)
+  ease_factor     Decimal   @default(2.5) @db.Decimal(4, 2)
+  last_score      Decimal?  @db.Decimal(4, 2)
+  last_reviewed_at DateTime? @db.Timestamptz(6)
+
+  user     User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  question Question @relation(fields: [question_id], references: [id], onDelete: Cascade)
+  project  Project  @relation(fields: [project_id], references: [id])
+
+  @@unique([user_id, question_id])
+  @@map("review_states")
+}
+
+// ─────────────────────────────────────────────
+// 5. Learning & Schedule
+// ─────────────────────────────────────────────
+
+model Schedule {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  project_id        String    @db.Uuid
+  created_by        String    @db.Uuid
+  topic_id          String?   @db.Uuid
+  title             String
+  description       String?
+  start_time        DateTime  @db.Timestamptz(6)
+  end_time          DateTime? @db.Timestamptz(6)
+  event_type        String    // study|quiz|review|deadline
+  source            String    @default("manual") // manual|ai_suggested
+  suggestion_status String    @default("accepted") // suggested|accepted|rejected
+  created_at        DateTime  @default(now()) @db.Timestamptz(6)
+
+  project     Project              @relation(fields: [project_id], references: [id], onDelete: Cascade)
+  creator     User                 @relation("ScheduleCreator", fields: [created_by], references: [id])
+  topic       Topic?               @relation(fields: [topic_id], references: [id], onDelete: SetNull)
+  completions ScheduleCompletion[]
+
+  @@map("schedules")
+}
+
+model ScheduleCompletion {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  schedule_id  String   @db.Uuid
+  user_id      String   @db.Uuid
+  completed_at DateTime @default(now()) @db.Timestamptz(6)
+  note         String?
+
+  schedule Schedule @relation(fields: [schedule_id], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@unique([schedule_id, user_id])
+  @@map("schedule_completions")
+}
+
+// ─────────────────────────────────────────────
+// 6. Chat
+// ─────────────────────────────────────────────
+
+model ChatSession {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  project_id String   @db.Uuid
+  user_id    String   @db.Uuid
+  title      String   @default("New conversation")
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  updated_at DateTime @updatedAt @db.Timestamptz(6)
+
+  project  Project       @relation(fields: [project_id], references: [id], onDelete: Cascade)
+  user     User          @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  messages ChatMessage[]
+
+  @@map("chat_sessions")
+}
+
+model ChatMessage {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  session_id       String   @db.Uuid
+  role             String   // user|assistant|system
+  content          String
+  status           String   @default("delivered")
+  citations        Json?
+  retrieval_params Json?
+  model_name       String?
+  prompt_version   String?
+  request_id       String?  @db.Uuid
+  created_at       DateTime @default(now()) @db.Timestamptz(6)
+
+  session ChatSession @relation(fields: [session_id], references: [id], onDelete: Cascade)
+
+  @@map("chat_messages")
+}
+
+// ─────────────────────────────────────────────
+// 7. Annotation
+// ─────────────────────────────────────────────
+
+model Note {
+  id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id             String   @db.Uuid
+  project_id          String   @db.Uuid
+  document_id         String   @db.Uuid
+  document_version_id String   @db.Uuid
+  page_number         Int
+  annotation_type     String   // text_highlight|rectangle
+  selected_text       String?
+  rectangles          Json?
+  content             String?
+  color               String   @default("#FFFF00")
+  version             Int      @default(1)
+  created_at          DateTime @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime @updatedAt @db.Timestamptz(6)
+
+  user             User            @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  project          Project         @relation(fields: [project_id], references: [id])
+  document         Document        @relation(fields: [document_id], references: [id], onDelete: Cascade)
+  document_version DocumentVersion @relation(fields: [document_version_id], references: [id], onDelete: Cascade)
+
+  @@map("notes")
+}
+
+// ─────────────────────────────────────────────
+// 8. Progress & Events
+// ─────────────────────────────────────────────
+
+model StudyEvent {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id          String   @db.Uuid
+  project_id       String   @db.Uuid
+  topic_id         String?  @db.Uuid
+  event_type       String
+  duration_seconds Int?
+  occurred_at      DateTime @default(now()) @db.Timestamptz(6)
+  source_id        String?  @db.Uuid
+  idempotency_key  String?  @unique
+  metadata         Json?
+
+  user    User    @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  project Project @relation(fields: [project_id], references: [id])
+  topic   Topic?  @relation(fields: [topic_id], references: [id], onDelete: SetNull)
+
+  @@map("study_events")
+}
+
+model ProgressSnapshot {
+  id                  String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id             String   @db.Uuid
+  project_id          String   @db.Uuid
+  snapshot_date       DateTime @db.Date
+  questions_attempted Int      @default(0)
+  questions_correct   Int      @default(0)
+  avg_score           Decimal  @default(0) @db.Decimal(5, 2)
+  topics_covered      Int      @default(0)
+  study_minutes       Int      @default(0)
+  created_at          DateTime @default(now()) @db.Timestamptz(6)
+
+  user    User    @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  project Project @relation(fields: [project_id], references: [id])
+
+  @@unique([user_id, project_id, snapshot_date])
+  @@map("progress_snapshots")
+}
