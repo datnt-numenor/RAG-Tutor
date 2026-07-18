@@ -16,6 +16,7 @@ Chatbot cho phép người dùng upload tài liệu (PDF, docx) và đặt câu 
 3. **Nộp bài tự luận bằng ảnh scan:** Ngoài gõ text, người dùng có thể chụp/scan bài làm viết tay hoặc in để nộp, hệ thống tự trích xuất nội dung trước khi chấm.
 4. **Không gian học nhóm có lời mời:** Mỗi project có owner và member. Owner quản lý tài liệu, lịch chung và lời mời; member được xem tài liệu, chat, làm quiz và tạo annotation riêng.
 5. **PDF annotation theo tọa độ:** Người dùng có thể highlight text/vùng chữ nhật trên PDF, chọn màu và thêm ghi chú. Tọa độ được chuẩn hóa để không lệch khi zoom hoặc đổi kích thước màn hình.
+6. **Xóa tài liệu vĩnh viễn:** Chỉ owner được xóa. Tài liệu bị loại khỏi retrieval ngay, worker dọn file/chunks/annotation/version; chat và quiz history được giữ bằng deleted citation + snapshots, nhưng không thể khôi phục nguồn.
 
 **Về mặt kỹ thuật (quy mô "tầm trung"):**
 - Chunking tự viết (giữ nguyên để thể hiện chiều sâu hiểu biết), tích hợp LangChain làm khung orchestration (vectorstore, retriever, structured output)
@@ -41,15 +42,16 @@ Hệ thống backend gồm các luồng ingestion/RAG, roadmap, quiz, cộng tá
 
 ### (a) Luồng nạp tài liệu (nền tảng chung)
 ```
-[Owner upload file trên React] → POST /projects/{project_id}/documents → [Tạo document version + ingestion job]
-                                                                                      ↓
-                                                              [Trích xuất text] → [Chunking tự viết]
-                                                                                      ↓
-                                                              [Bọc thành LangChain Document]
-                                                                                      ↓
-                                                        [Embedding multilingual: sentence-transformers]
-                                                                                      ↓
-                              [RPC match_chunks + pgvector] → [Supabase Postgres + private Storage]
+[User tạo project] → POST /projects → [Transaction: tạo project + owner membership]
+                                           ↓
+[Owner upload PDF/docx] → POST /projects/{project_id}/documents
+→ [Kiểm tra owner + MIME + dung lượng + checksum]
+→ [Lưu file vào Supabase Storage private]
+→ [Tạo documents + document_versions v1 + document_jobs(job_type='ingest')]
+                                           ↓
+[Worker: extract text → chunk theo tokenizer/source spans → embedding multilingual]
+→ [Lưu chunks/vector vào Postgres/pgvector → tạo summary]
+→ [Đánh dấu version ready + gán documents.active_version_id]
 ```
 
 ### (b) Luồng chat hỏi-đáp
@@ -69,9 +71,9 @@ POST /projects/{project_id}/roadmap/generate → [Chunk trong Supabase] → [LLM
                                     ↓
 [Target score + exam date + thời gian học/tuần + diagnostic] → [Xếp thứ tự prerequisite] → [Lộ trình học]
                                     ↓
-                    Điểm mục tiêu thấp  → chỉ chủ đề cốt lõi, cấp độ Nhớ/Hiểu
-                    Điểm mục tiêu TB    → + chủ đề mức Áp dụng
-                    Điểm mục tiêu cao   → + chủ đề nâng cao/edge case, cấp độ Phân tích/Đánh giá
+                    Ưu tiên lỗ hổng diagnostic + prerequisite bắt buộc
+                    Phân bổ độ sâu theo thời gian còn lại và mục tiêu
+                    Không bỏ kiến thức chỉ vì target score thấp
 ```
 
 ### (d) Luồng sinh câu hỏi & làm bài
@@ -87,7 +89,7 @@ POST /projects/{project_id}/questions/generate → [Chunk/chủ đề] → [LLM 
                      → trả text về React để user xác nhận/chỉnh sửa
                      → POST /quiz-sessions/{id}/answers/{answer_id}/confirm
                                                                 ↓
-                                          [LLM-as-judge: so với đáp án mẫu/key points]
+                                          [LLM-as-judge: rubric + key points + evidence nguồn]
                                                                 ↓
                               [Điểm + nhận xét + nguồn + model/prompt version] → [`quiz_attempts`]
                                                                 ↓
@@ -108,6 +110,20 @@ POST /projects/{project_id}/questions/generate → [Chunk/chủ đề] → [LLM 
 → [Lưu page_number + rectangles chuẩn hóa 0..1 + selected_text + màu + note]
 → Chỉ chính user được xem/sửa/xóa annotation của mình
 ```
+
+### (g) Luồng xóa tài liệu vĩnh viễn
+```
+[Owner xác nhận "Xóa vĩnh viễn"]
+→ DELETE /projects/{project_id}/documents/{document_id}
+→ [Transaction: status='deleting' + active_version_id=NULL + tạo document_jobs(job_type='delete')]
+→ [Tài liệu lập tức bị loại khỏi match_chunks]
+→ [Worker hủy ingest đang chạy, xóa Storage + annotation + chunks + summary + versions]
+→ [Xóa source links; loại question/topic không còn nguồn khỏi nội dung active]
+→ [Giữ quiz snapshots và chat; citation hiển thị source_deleted]
+→ [Xóa document record → deletion job succeeded]
+```
+
+Xóa không có undo/restore. Upload lại cùng file sau khi job hoàn tất luôn tạo `document_id` mới, version 1 mới và chạy lại toàn bộ extract/chunk/embed.
 
 ---
 
@@ -236,16 +252,18 @@ def to_langchain_documents(chunks_with_metadata):
 - [ ] Khóa quyền MVP: owner quản lý file, câu hỏi, lịch và invitation; member xem tài liệu, chat, làm quiz và CRUD annotation riêng.
 - **Mục tiêu:** nền tảng multi-user an toàn trước khi thêm dữ liệu học tập.
 
-### Bước 2 — Ingestion, document versioning và retrieval
-- [ ] Upload PDF/docx vào Storage private; lưu checksum, MIME thực, kích thước và tạo `document_versions` + `ingestion_jobs`.
+### Bước 2 — Document jobs, versioning và retrieval
+- [ ] Upload PDF/docx vào Storage private; lưu checksum, MIME thực, kích thước và tạo `document_versions` + `document_jobs(job_type='ingest')`.
 - [ ] Xử lý bất đồng bộ extract → chunk theo tokenizer → embed multilingual → summary; retry phải idempotent.
 - [ ] Viết RPC `match_chunks` lọc theo project, version đang active và document `ready`; thêm similarity threshold.
+- [ ] Xây permanent deletion job: chuyển `deleting`, loại khỏi retrieval ngay, cleanup Storage/database có retry và không cho restore.
 - [ ] Benchmark ít nhất hai cấu hình embedding/chunk trên bộ câu hỏi tiếng Việt trước khi chốt model.
-- **Mục tiêu:** upload có progress/retry và retrieval không bao giờ lẫn project.
+- **Mục tiêu:** upload/delete có progress/retry; retrieval không bao giờ lẫn project hoặc dùng document đang xóa.
 
 ### Bước 3 — RAG chat có citation và abstain
 - [ ] Tạo chat session/history, multi-document retrieval trong phạm vi project và streaming response.
 - [ ] Mỗi citation chứa chunk, document version, file, trang và source spans để UI mở đúng nguồn.
+- [ ] Giữ chat message khi nguồn bị xóa nhưng chuyển citation sang `source_deleted` và không phát signed URL.
 - [ ] Nếu không có evidence vượt threshold, trả trạng thái `insufficient_evidence` thay vì để LLM đoán.
 - [ ] Đo retrieval recall, answer correctness, citation correctness và latency trên test set cố định.
 - **Mục tiêu:** vertical slice RAG chạy end-to-end và có số liệu đánh giá.
@@ -292,7 +310,7 @@ def to_langchain_documents(chunks_with_metadata):
 
 ### Bước 10 — Hardening, đánh giá và deploy
 - [ ] Rate limit/quota cho Gemini; log request ID, job ID, model, prompt version, latency và lỗi nhưng không log nội dung nhạy cảm mặc định.
-- [ ] Test authorization, file validation, signed URL, retry/idempotency, RAG evaluation, OCR và grading consistency.
+- [ ] Test authorization, file validation, signed URL, ingest/delete retry/idempotency, RAG evaluation, OCR và grading consistency.
 - [ ] Deploy frontend/backend; ghi rõ cold start, quota free tier và giới hạn LLM/OCR trong README.
 - [ ] Export PDF, XP/checkpoint và chia sẻ annotation giữa thành viên để sau MVP.
 
@@ -319,7 +337,7 @@ Nên có con số cụ thể nếu đo được, ví dụ: % câu trả lời đ
 ## 8. Checklist tổng thể
 
 - [ ] Bước 1: Schema v5 + Auth + RLS + private Storage
-- [ ] Bước 2: Ingestion jobs + document versioning + multilingual retrieval
+- [ ] Bước 2: Document ingest/delete jobs + versioning + multilingual retrieval
 - [ ] Bước 3: Multi-document RAG + citation + abstain + evaluation
 - [ ] Bước 4: Group invitation bảo mật bằng token hash và verified email
 - [ ] Bước 5: PDF.js annotation highlight/note theo tọa độ chuẩn hóa
@@ -333,6 +351,8 @@ Nên có con số cụ thể nếu đo được, ví dụ: % câu trả lời đ
 - [ ] User ngoài project không thể đọc/ghi dữ liệu hoặc file của project bằng cả FastAPI và Supabase API.
 - [ ] Member chỉ học và CRUD annotation riêng; owner mới quản lý tài liệu, lịch chung, question generation và invitation.
 - [ ] Retrieval không trả chunk chéo project và trả `insufficient_evidence` khi nguồn không đủ.
+- [ ] Xóa tài liệu loại nguồn khỏi retrieval ngay; cleanup xóa Storage/chunks/annotation/version và upload lại tạo document mới.
 - [ ] Annotation không lệch sau reload/zoom/resize và không mất khi document có version mới.
 - [ ] Ảnh bài viết tay chỉ truy cập qua signed URL; bắt buộc xác nhận OCR trước khi chấm và có thể xóa ảnh.
 - [ ] Lịch sử quiz/review/progress không bị thay đổi khi tài liệu hoặc câu hỏi có version mới.
+- [ ] Chat cũ vẫn hiển thị; citation của tài liệu đã xóa báo `source_deleted` và không thể mở nguồn.

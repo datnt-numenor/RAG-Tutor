@@ -1,7 +1,7 @@
 # Thiết kế Database v5 — AI Study Assistant (RAGTutor)
 
 > [!IMPORTANT]
-> **Cập nhật v5 (18/07/2026):** MVP là ứng dụng multi-user và giữ ba chức năng bắt buộc: group invitation, PDF annotation theo tọa độ, chấm ảnh viết tay. Bản v5 đồng thời sửa các lỗi của v4 về LangChain/Supabase schema, RLS chưa đầy đủ, dữ liệu chéo project, document/question versioning, quiz session, spaced repetition và progress aggregate.
+> **Cập nhật v5 (18/07/2026):** MVP là ứng dụng multi-user và giữ ba chức năng bắt buộc: group invitation, PDF annotation theo tọa độ, chấm ảnh viết tay. Bản v5 đồng thời sửa các lỗi của v4 về LangChain/Supabase schema, RLS, dữ liệu chéo project, versioning, quiz/review và quy định xóa tài liệu là permanent deletion có background cleanup; không có document archive/restore.
 
 ---
 
@@ -41,7 +41,7 @@ Identity & collaboration
 Documents & retrieval
 ├── documents
 ├── document_versions
-├── ingestion_jobs
+├── document_jobs
 └── chunks
 
 Knowledge graph
@@ -147,9 +147,11 @@ erDiagram
         timestamptz processed_at
     }
 
-    ingestion_jobs {
+    document_jobs {
         uuid id PK
+        uuid document_id
         uuid document_version_id FK
+        text job_type
         text status
         text stage
         integer progress_current
@@ -373,7 +375,8 @@ erDiagram
     projects ||--o{ documents : contains
     documents ||--o{ document_versions : versions
     projects ||--o{ document_versions : scopes
-    document_versions ||--o{ ingestion_jobs : processes
+    documents ||--o{ document_jobs : processes
+    document_versions o|--o{ document_jobs : version_target
     documents ||--o{ chunks : contains
     document_versions ||--o{ chunks : produces
     projects ||--o{ chunks : scopes
@@ -479,11 +482,13 @@ Unique partial `(project_id, invited_email) WHERE status='pending'`. Accept invi
 
 #### `documents`
 
-Đây là thực thể logic ổn định, không đại diện một lần upload cụ thể.
+Đây là thực thể logic ổn định trong thời gian tài liệu tồn tại, không đại diện một lần upload cụ thể. Tài liệu không có soft delete/archive trong MVP.
 
-- `id`, `project_id`, `created_by`, `display_name`, `status ('active','archived')`, timestamps.
+- `id`, `project_id`, `created_by`, `display_name`, `status ('active','deleting')`, timestamps.
 - Unique `(id, project_id)` để làm đích cho composite foreign key.
 - `active_version_id` nullable và được cập nhật chỉ sau khi version mới xử lý thành công.
+- Khi bắt đầu xóa, backend chuyển status sang `deleting` trong cùng transaction tạo delete job. `match_chunks` chỉ nhận document `active`, nên tài liệu bị loại khỏi retrieval ngay lập tức.
+- Khi cleanup hoàn tất, document record bị xóa; không giữ checksum/tombstone để upload lại có thể tạo document ID mới.
 
 #### `document_versions`
 
@@ -503,12 +508,14 @@ Unique partial `(project_id, invited_email) WHERE status='pending'`. Accept invi
 
 Unique `(document_id, sha256)` chống ingest cùng nội dung nhiều lần.
 
-#### `ingestion_jobs`
+#### `document_jobs`
 
-- `id`, `document_version_id`, `status ('queued','running','succeeded','failed','cancelled')`.
-- `stage ('extract','chunk','embed','summarize')`, `progress_current`, `progress_total`, `attempt_count`, `max_attempts`, `last_error`, timestamps.
-- Một version chỉ có tối đa một job chưa kết thúc; retry tiếp tục cùng job hoặc tạo attempt log, không tạo chunks trùng.
-- Worker xóa chunks chưa hoàn tất trước khi retry trong một transaction giới hạn theo `document_version_id`.
+- `id`, `document_id`, `document_version_id`, `job_type ('ingest','delete')`, `status ('queued','running','succeeded','failed','cancelled')`.
+- Ingest stages: `store`, `extract`, `chunk`, `embed`, `summarize`, `activate`; delete stages: `exclude`, `cancel_ingest`, `storage`, `derived_data`, `document`, `done`.
+- `document_id` là subject ID không có FK để deletion job tối thiểu vẫn tồn tại sau khi document record bị xóa; `document_version_id` nullable và dùng `ON DELETE SET NULL`.
+- `progress_current`, `progress_total`, `attempt_count`, `max_attempts`, `last_error`, timestamps phục vụ progress/retry.
+- Một version chỉ có tối đa một ingest job chưa kết thúc; một document chỉ có tối đa một delete job chưa kết thúc.
+- Retry ingest xóa chunks chưa hoàn tất theo `document_version_id`; retry delete tiếp tục từ stage chưa hoàn thành và phải idempotent.
 
 #### `chunks`
 
@@ -570,13 +577,14 @@ Backend vẫn kiểm tra caller là member trước khi gọi RPC. Không cấp 
 
 #### `topic_sources`
 
-- `topic_id`, `chunk_id`, `relevance`; composite PK `(topic_id, chunk_id)`.
+- `topic_id`, `chunk_id`, `relevance`; composite PK `(topic_id, chunk_id)`; FK tới chunk dùng `ON DELETE CASCADE`.
 - Trigger/composite constraint đảm bảo topic và chunk cùng project.
+- Sau permanent delete, topic không còn source sẽ bị xóa khỏi nội dung active; `schedules.topic_id` dùng `ON DELETE SET NULL` để không xóa lịch sử lịch học.
 
 #### `topic_prerequisites`
 
 - `topic_id`, `prerequisite_topic_id`, `strength`; composite PK.
-- Không cho self-reference; service phải phát hiện cycle trước khi lưu roadmap.
+- FK tới topic dùng `ON DELETE CASCADE`; không cho self-reference; service phải phát hiện cycle trước khi lưu roadmap.
 
 ### 3.4 Question, quiz và spaced repetition
 
@@ -590,8 +598,9 @@ Backend vẫn kiểm tra caller là member trước khi gọi RPC. Không cấp 
 
 #### `question_sources`
 
-- `question_id`, `chunk_id`; composite PK và constraint cùng project.
+- `question_id`, `chunk_id`; composite PK và constraint cùng project; FK tới chunk dùng `ON DELETE CASCADE`.
 - Cho phép một question tổng hợp evidence từ nhiều chunk/document.
+- Khi xóa document, question mất toàn bộ source sẽ bị xóa khỏi question bank. `quiz_attempts.question_id` dùng `ON DELETE SET NULL` và attempt snapshot giữ nguyên lịch sử.
 
 #### `quiz_sessions`
 
@@ -603,13 +612,14 @@ Backend vẫn kiểm tra caller là member trước khi gọi RPC. Không cấp 
 | `started_at`, `submitted_at`, `graded_at` | TIMESTAMPTZ | — |
 | `total_score`, `max_score` | NUMERIC | Tổng từ attempts |
 
-Không thêm/xóa câu khỏi session sau khi bắt đầu.
+Không thêm/xóa câu khỏi session sau khi bắt đầu. `question_ids` là snapshot thứ tự; ID đã bị xóa có thể còn trong session lịch sử nhưng UI dựng nội dung từ `quiz_attempts` snapshot.
 
 #### `quiz_attempts`
 
 Mỗi row là câu trả lời cho một question trong quiz session.
 
-- `id`, `quiz_session_id`, `question_id`, `user_id`, `project_id`; unique `(quiz_session_id, question_id)`.
+- `id`, `quiz_session_id`, `question_id` nullable, `user_id`, `project_id`; unique `(quiz_session_id, question_id)` cho question còn tồn tại.
+- `question_id` dùng `ON DELETE SET NULL`; xóa question nguồn không được cascade vào attempt.
 - Snapshot bắt buộc: `question_text_snapshot`, `options_snapshot`, `rubric_snapshot`, `max_score_snapshot`.
 - `submission_type ('text','image_scan')`, `user_answer`, `ocr_raw_text`, `ocr_confirmed_text`.
 - `image_storage_path` trỏ bucket private; `image_deleted_at` cho phép xóa ảnh nhưng giữ kết quả.
@@ -620,6 +630,7 @@ Mỗi row là câu trả lời cho một question trong quiz session.
 #### `review_states`
 
 - `user_id`, `question_id`, `project_id` là unique state cho một user-question.
+- FK `question_id` dùng `ON DELETE CASCADE`; khi question mất toàn bộ nguồn và bị xóa, lịch ôn tương lai của question đó cũng bị xóa.
 - `due_at`, `interval_days`, `repetitions`, `ease_factor`, `last_score`, `last_reviewed_at`.
 - Update state sau attempt graded trong transaction; không lưu due date trên từng attempt.
 - Danh sách đến hạn được query khi mở app hoặc bằng Supabase Cron/worker thật, không chạy cron trong process FastAPI free-tier.
@@ -644,6 +655,7 @@ Mỗi row là câu trả lời cho một question trong quiz session.
 - Message: `session_id`, `role ('user','assistant','system')`, `content`, `status`, timestamps.
 - Assistant message lưu `citations JSONB`, `retrieval_params JSONB`, `model_name`, `prompt_version` và `request_id`.
 - Citations chứa immutable `document_version_id`, `chunk_id`, file/page/source spans và similarity.
+- Trước khi xóa chunks/version, delete worker cập nhật citation liên quan thành `source_status='deleted'`, bỏ mọi storage path/signed URL. Nội dung user/assistant message vẫn được giữ và UI hiển thị “Nguồn đã bị xóa”.
 
 #### `notes` — PDF annotation riêng tư
 
@@ -683,6 +695,20 @@ projects/{project_id}/documents/{document_id}/versions/{version_id}/{safe_filena
 
 Chỉ owner upload/delete. Member nhận signed URL sau khi backend xác nhận membership.
 
+### Permanent document deletion
+
+Nút **Xóa tài liệu** luôn là xóa vĩnh viễn; document không có archive/restore. API trả `202 Accepted` và worker thực hiện theo thứ tự idempotent:
+
+1. Trong transaction: kiểm tra owner, chuyển `documents.status='deleting'`, đặt `active_version_id=NULL`, tạo `document_jobs(job_type='delete')` và hủy/cancel ingest job đang chạy.
+2. Từ thời điểm này `match_chunks` không còn trả tài liệu vì chỉ query document `active`.
+3. Đánh dấu citations trong chat là `source_deleted`; giữ nguyên nội dung chat.
+4. Xóa objects của mọi document version trong bucket `documents`; signed URL cũ không còn đọc được object sau cleanup.
+5. Xóa notes/annotations, topic/question source links, chunks, summary, document versions và ingest job data.
+6. Xóa topic không còn source (`schedules`/`study_events` giữ lịch sử với `topic_id=NULL`). Xóa question không còn source khỏi question bank; review state tương lai bị xóa, còn `quiz_attempts` được giữ bằng snapshot và `question_id` chuyển `NULL`.
+7. Xóa document record và đánh dấu delete job `succeeded`. Job chỉ giữ subject ID, trạng thái và lỗi vận hành, không giữ filename, checksum hay nội dung.
+
+Nếu một bước thất bại, document vẫn ở `deleting`, bị loại khỏi retrieval và worker retry từ stage chưa hoàn thành. Request xóa lặp lại trả cùng delete job. Chỉ cho upload lại file sau khi job kết thúc; lần upload đó luôn tạo document mới + version 1 và chạy lại extract/chunk/embed.
+
 ### Bucket `quiz-submissions` — private
 
 ```text
@@ -716,7 +742,7 @@ Tạo các function trong schema không expose trực tiếp, dùng `SECURITY DE
 | Notes | Chính user | Chính user và phải là project member |
 | Quiz sessions/attempts/review states | Chính user | Chính user; grading field chỉ backend/system cập nhật |
 | Progress/study events | Chính user | Backend/system; user không sửa aggregate trực tiếp |
-| Chunks/jobs/document versions | Project member đọc bản ready | Owner tạo request; worker/service xử lý |
+| Chunks/jobs/document versions | Project member đọc bản ready; owner xem job progress | Owner tạo ingest/delete request; worker/service xử lý |
 
 Tất cả 23 bảng trong `public` phải `ENABLE ROW LEVEL SECURITY`; không để placeholder “thêm tương tự”. Migration test phải chạy bằng anon, authenticated user A/B, owner, member và service role.
 
@@ -742,12 +768,15 @@ Không trả `token_hash` qua API. Endpoint preview chỉ trả project name, in
 ```text
 POST /projects/{id}/documents
 POST /documents/{id}/versions
-GET  /ingestion-jobs/{job_id}
-POST /ingestion-jobs/{job_id}/retry
+GET  /document-jobs/{job_id}
+POST /document-jobs/{job_id}/retry
 GET  /document-versions/{id}/signed-url
+DELETE /projects/{project_id}/documents/{document_id}
 ```
 
 Upload trả `202 Accepted` cùng `document_id`, `version_id`, `job_id`; không giữ HTTP request đến khi embedding xong.
+
+Delete chỉ dành cho owner, luôn có nghĩa xóa vĩnh viễn và trả `202 Accepted` cùng `job_id`. Hai request đồng thời/lặp lại phải nhận cùng delete job đang chạy; không có endpoint restore document.
 
 ### Annotation
 
@@ -779,7 +808,7 @@ Upload scan trả attempt ở trạng thái `ocr_pending_confirmation`. Confirm 
 
 1. Chụp schema hiện tại và tạo migration versioned; không chạy script `CREATE TABLE` cũ trên database đang có.
 2. Tạo extensions `vector`, `citext`, helper functions và trigger timestamps.
-3. Tạo bảng mới, backfill `documents` thành logical document + version 1.
+3. Tạo bảng mới, backfill `documents` thành logical document + version 1 và chuyển job ingestion cũ sang `document_jobs(job_type='ingest')`.
 4. Chuyển chunk sang `document_version_id`, `source_spans` và model metadata; re-embed bằng multilingual model trước khi bật version active.
 5. Chuyển `topics.source_chunk_ids` và question source đơn thành link tables.
 6. Tạo quiz sessions cho attempt cũ theo từng user/time window; snapshot question/rubric.
@@ -797,7 +826,7 @@ Upload scan trả attempt ở trạng thái `ocr_pending_confirmation`. Confirm 
 - Có đúng 23 bảng ứng dụng, tất cả bật RLS và không có policy placeholder.
 - Không insert được chunk/topic/question/note có project hoặc document version không khớp.
 - Một project chỉ có một owner; một email/project chỉ có một invitation pending.
-- Retry ingestion không tạo duplicate version/chunk.
+- Retry ingest/delete job không tạo duplicate version/chunk hoặc cleanup trùng.
 
 ### Authorization
 
@@ -807,9 +836,20 @@ Upload scan trả attempt ở trạng thái `ocr_pending_confirmation`. Confirm 
 
 ### Retrieval/versioning
 
-- `match_chunks` không trả dữ liệu chéo project hoặc version superseded.
+- `match_chunks` không trả dữ liệu chéo project, version superseded hoặc document `deleting`.
 - Citation mở đúng file, version, trang và source spans.
-- Question/document retire không xóa hoặc làm thay đổi lịch sử quiz.
+- Retire question/version không làm thay đổi lịch sử quiz.
+
+### Permanent document deletion
+
+- Chỉ owner xóa được; member/user ngoài project nhận `403`.
+- Document bị loại khỏi retrieval ngay khi delete job được tạo, kể cả cleanup chưa hoàn tất.
+- Xóa khi ingest đang chạy phải cancel ingest và không để lại chunks, annotations hoặc Storage object.
+- Hai request xóa đồng thời/lặp lại trả cùng delete job; retry tiếp tục đúng stage và không lỗi nếu object/row đã bị xóa.
+- Chat message được giữ, citation chuyển `source_deleted` và không thể lấy signed URL.
+- Question/topic mất toàn bộ nguồn bị loại khỏi nội dung active; quiz attempts/scores/rubric snapshots vẫn đọc được.
+- Sau cleanup không còn file, version, summary, chunks, annotation hay ingest data của document.
+- Upload lại cùng file sau job thành công tạo document ID mới, version 1 mới và embeddings mới.
 
 ### Invitation
 
