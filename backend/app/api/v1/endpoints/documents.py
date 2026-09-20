@@ -106,7 +106,19 @@ async def upload_document(
     }).execute()
     job_id = job_res.data[0]["id"]
 
-    # TODO: dispatch Celery task: ingest_document.delay(document_id, version_id, job_id)
+    from app.workers.ingest_worker import ingest_document
+
+    try:
+        ingest_document.delay(document_id, version_id, job_id)
+    except Exception as exc:
+        db.table("document_jobs").update({
+            "status": "failed",
+            "last_error": f"Failed to dispatch ingest worker: {exc}",
+        }).eq("id", job_id).execute()
+        raise HTTPException(
+            status_code=503,
+            detail="Document uploaded but ingestion worker could not be queued",
+        ) from exc
 
     return {"document_id": document_id, "version_id": version_id, "job_id": job_id}
 
