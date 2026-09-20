@@ -143,6 +143,9 @@ class IngestService:
                 version_id=version_id,
             )
 
+            if not rows:
+                raise ValueError("No extractable text found in document")
+
             self.supabase.table("document_jobs").update(
                 {
                     "stage": "embed",
