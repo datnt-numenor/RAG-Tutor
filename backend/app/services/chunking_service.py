@@ -1,18 +1,37 @@
-"""
-Chunking Service — Milestone 2.
-
-Custom Vietnamese-aware chunker (Plan.md §3):
-  1. Split by paragraph (\\n\\n) and headings
-  2. Sentence tokenization (regex, handles TP.HCM, GS., numbers)
-  3. Greedy merge to target_tokens=220, max_tokens=256
-  4. Add 1-2 sentence overlap between chunks
-  5. Attach metadata: page, section_title, chunk_index, source_spans
-"""
-from __future__ import annotations
+import re
 
 
 class ChunkingService:
-    """Placeholder — implement in Milestone 2."""
+    def split_sentences(self, text: str) -> list[str]:
+        return re.split(r'(?<=[.!?])\s+', text)
 
-    def chunk(self, text: str, page_number: int = 1) -> list[dict]:
-        raise NotImplementedError("ChunkingService.chunk not yet implemented")
+    def chunk(
+        self,
+        text: str,
+        page_number: int,
+        sentences_per_chunk: int = 2,
+        overlap: int = 1
+    ) -> list[dict]:
+        sentences = self.split_sentences(text)
+
+        chunks = []
+
+        step = sentences_per_chunk - overlap
+
+        for i in range(0, len(sentences), step):
+            chunk_sentences = sentences[i:i + sentences_per_chunk]
+
+            if not chunk_sentences:
+                continue
+
+            chunk_text = " ".join(chunk_sentences).strip()
+
+            if not chunk_text:
+                continue
+
+            chunks.append({
+                "content": chunk_text,
+                "page_number": page_number
+            })
+
+        return chunks

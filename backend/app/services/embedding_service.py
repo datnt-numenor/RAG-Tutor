@@ -1,9 +1,13 @@
-"""Embedding Service — wraps sentence-transformers multilingual model."""
-from __future__ import annotations
+from sentence_transformers import SentenceTransformer
 
 
 class EmbeddingService:
-    """Placeholder — implement in Milestone 2."""
+    def __init__(self):
+        self.model = SentenceTransformer(
+            "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+        )
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
-        raise NotImplementedError("EmbeddingService.embed not yet implemented")
+    def embed(self, text: str) -> list[float]:
+        embedding = self.model.encode(text)
+
+        return embedding.tolist()
