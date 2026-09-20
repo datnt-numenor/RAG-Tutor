@@ -139,16 +139,25 @@ async def send_message(
         "session_id": str(session_id),
         "role": "assistant",
         "content": result["answer"],
-        "status": result["status"],
+        "status": "delivered",
         "citations": result["sources"],
-        "retrieval_params": result["retrieval_params"],
+        "retrieval_params": {
+            **result["retrieval_params"],
+            "rag_status": result["status"],
+        },
         "model_name": result["model_name"],
         "prompt_version": result["prompt_version"],
     }).execute()
 
+    session_update = {}
     if session.data.get("title") == "New conversation":
-        db.table("chat_sessions").update({
-            "title": body.content[:80],
-        }).eq("id", str(session_id)).execute()
+        session_update["title"] = body.content[:80]
+
+    from datetime import datetime, timezone
+    session_update["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    db.table("chat_sessions").update(session_update).eq(
+        "id", str(session_id)
+    ).execute()
 
     return msg_res.data[0]
