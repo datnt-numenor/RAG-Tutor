@@ -5,9 +5,11 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.database import get_supabase_admin
+from app.services.rag_service import get_rag_service
 
 router = APIRouter()
 
@@ -39,6 +41,18 @@ async def create_session(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> dict:
     db = get_supabase_admin()
+
+    member = (
+        db.table("project_members")
+        .select("id")
+        .eq("project_id", str(project_id))
+        .eq("user_id", current_user.user_id)
+        .maybe_single()
+        .execute()
+    )
+    if not member.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+
     res = db.table("chat_sessions").insert({
         "project_id": str(project_id),
         "user_id": current_user.user_id,
@@ -58,6 +72,7 @@ async def list_messages(
         db.table("chat_sessions")
         .select("id")
         .eq("id", str(session_id))
+        .eq("project_id", str(project_id))
         .eq("user_id", current_user.user_id)
         .maybe_single()
         .execute()
@@ -82,16 +97,20 @@ async def send_message(
     body: MessageCreate,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> dict:
-    """
-    RAG pipeline:
-    1. Embed user query
-    2. RPC match_chunks (project-scoped)
-    3. LLM generates answer with citations
-    4. Persist both user and assistant messages
-    TODO: implement full RAG chain in services/rag_service.py
-    """
     db = get_supabase_admin()
-    # Persist user message
+
+    session = (
+        db.table("chat_sessions")
+        .select("id, title")
+        .eq("id", str(session_id))
+        .eq("project_id", str(project_id))
+        .eq("user_id", current_user.user_id)
+        .maybe_single()
+        .execute()
+    )
+    if not session.data:
+        raise HTTPException(status_code=404, detail="Session not found")
+
     db.table("chat_messages").insert({
         "session_id": str(session_id),
         "role": "user",
@@ -99,14 +118,37 @@ async def send_message(
         "status": "delivered",
     }).execute()
 
-    # TODO: call RAGService.answer(project_id, session_id, body.content)
-    assistant_reply = "RAG pipeline not yet implemented. Stay tuned!"
+    rag_service = get_rag_service()
+
+    try:
+        result = await run_in_threadpool(
+            rag_service.answer,
+            str(project_id),
+            body.content,
+        )
+    except Exception as exc:
+        db.table("chat_messages").insert({
+            "session_id": str(session_id),
+            "role": "assistant",
+            "content": "Không thể xử lý câu hỏi lúc này.",
+            "status": "error",
+        }).execute()
+        raise HTTPException(status_code=502, detail="RAG generation failed") from exc
 
     msg_res = db.table("chat_messages").insert({
         "session_id": str(session_id),
         "role": "assistant",
-        "content": assistant_reply,
-        "status": "delivered",
+        "content": result["answer"],
+        "status": result["status"],
+        "citations": result["sources"],
+        "retrieval_params": result["retrieval_params"],
+        "model_name": result["model_name"],
+        "prompt_version": result["prompt_version"],
     }).execute()
+
+    if session.data.get("title") == "New conversation":
+        db.table("chat_sessions").update({
+            "title": body.content[:80],
+        }).eq("id", str(session_id)).execute()
 
     return msg_res.data[0]
