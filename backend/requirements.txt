@@ -14,7 +14,7 @@ pydantic-settings==2.7.0
 email-validator==2.2.0
 
 # ── Supabase (Storage + Auth helper, RPC calls) ───────────────────────────────
-supabase==2.11.0
+supabase>=2.31.0
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 python-jose[cryptography]==3.3.0
