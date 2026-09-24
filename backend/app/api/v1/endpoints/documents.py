@@ -196,6 +196,38 @@ async def delete_document(
     return {"job_id": job_id, "message": "Deletion queued"}
 
 
+
+@router.get("/projects/{project_id}/document-jobs")
+async def list_project_document_jobs(
+    project_id: UUID,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+) -> list[dict]:
+    """List document processing jobs for a project, newest first."""
+    db = get_supabase_admin()
+    _assert_member(db, str(project_id), current_user.user_id)
+
+    documents = (
+        db.table("documents")
+        .select("id")
+        .eq("project_id", str(project_id))
+        .execute()
+    )
+    document_ids = [row["id"] for row in documents.data]
+
+    if not document_ids:
+        return []
+
+    res = (
+        db.table("document_jobs")
+        .select("*")
+        .in_("document_id", document_ids)
+        .order("created_at", desc=True)
+        .limit(100)
+        .execute()
+    )
+    return res.data
+
+
 @router.get("/document-versions/{version_id}/signed-url")
 async def get_signed_url(
     version_id: UUID,
