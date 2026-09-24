@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     app_env: Literal["development", "staging", "production"] = "development"
     secret_key: str = "change-me"
     allowed_origins: Annotated[list[str], NoDecode] = ["http://localhost:3000"]
+    allowed_origin_regex: str | None = None
 
     @field_validator("allowed_origins", mode="before")
     @classmethod
