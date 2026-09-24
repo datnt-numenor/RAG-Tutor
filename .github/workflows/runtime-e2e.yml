@@ -127,6 +127,36 @@ jobs:
           raise SystemExit("Runtime did not become ready: " + last)
           PY
 
+      - name: Wait for Celery worker
+        run: |
+          python - <<'PY'
+          import subprocess
+          import time
+
+          deadline = time.monotonic() + 90
+          last = ""
+          while time.monotonic() < deadline:
+              result = subprocess.run(
+                  [
+                      "celery",
+                      "-A",
+                      "app.workers.celery_app.celery_app",
+                      "inspect",
+                      "ping",
+                      "--timeout=5",
+                  ],
+                  text=True,
+                  capture_output=True,
+              )
+              last = (result.stdout + result.stderr).strip()
+              if result.returncode == 0 and "pong" in last.casefold():
+                  print(last)
+                  raise SystemExit(0)
+              time.sleep(3)
+
+          raise SystemExit("Celery worker did not become ready: " + last)
+          PY
+
       - name: Run vertical-slice smoke E2E and fixed RAG evaluation
         env:
           RAGTUTOR_TEST_EMAIL: ${{ env.RAGTUTOR_OWNER_EMAIL }}
