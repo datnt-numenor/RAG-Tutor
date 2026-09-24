@@ -2,15 +2,16 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Annotated
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.database import get_supabase_admin
 from app.services.quiz_service import get_quiz_service
+from app.services.ocr_service import get_ocr_service
 
 router = APIRouter()
 
@@ -22,6 +23,10 @@ class GenerateQuizRequest(BaseModel):
 
 class AnswerRequest(BaseModel):
     answer: str
+
+
+class ConfirmScanRequest(BaseModel):
+    text: str = Field(..., min_length=1)
 
 
 def _assert_member(db, project_id: str, user_id: str) -> None:
@@ -300,3 +305,312 @@ async def submit_quiz(
         .execute()
     )
     return result.data[0]
+
+
+ALLOWED_SCAN_MIME = {"image/jpeg", "image/png", "image/webp"}
+MAX_SCAN_SIZE = 12 * 1024 * 1024
+
+
+def _validate_image_magic(content: bytes, mime_type: str) -> bool:
+    if mime_type == "image/jpeg":
+        return len(content) >= 3 and content[:3] == b"\xff\xd8\xff"
+    if mime_type == "image/png":
+        return content.startswith(b"\x89PNG\r\n\x1a\n")
+    if mime_type == "image/webp":
+        return (
+            len(content) >= 12
+            and content[:4] == b"RIFF"
+            and content[8:12] == b"WEBP"
+        )
+    return False
+
+
+def _get_owned_quiz_session(
+    db,
+    project_id: str,
+    session_id: str,
+    user_id: str,
+) -> dict:
+    session = (
+        db.table("quiz_sessions")
+        .select("*")
+        .eq("id", session_id)
+        .eq("project_id", project_id)
+        .eq("user_id", user_id)
+        .maybe_single()
+        .execute()
+    )
+    if not session.data:
+        raise HTTPException(status_code=404, detail="Quiz session not found")
+    if session.data["status"] != "in_progress":
+        raise HTTPException(status_code=409, detail="Quiz session is not active")
+    return session.data
+
+
+@router.post(
+    "/projects/{project_id}/quiz/sessions/{session_id}/questions/{question_id}/scan",
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_essay_scan(
+    project_id: UUID,
+    session_id: UUID,
+    question_id: UUID,
+    file: UploadFile = File(...),
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)] = None,
+) -> dict:
+    db = get_supabase_admin()
+    project_id_str = str(project_id)
+    session_id_str = str(session_id)
+    question_id_str = str(question_id)
+
+    _assert_member(db, project_id_str, current_user.user_id)
+    session = _get_owned_quiz_session(
+        db,
+        project_id_str,
+        session_id_str,
+        current_user.user_id,
+    )
+    if question_id_str not in session["question_ids"]:
+        raise HTTPException(status_code=404, detail="Question not in this quiz")
+
+    question = (
+        db.table("questions")
+        .select("*")
+        .eq("id", question_id_str)
+        .eq("project_id", project_id_str)
+        .maybe_single()
+        .execute()
+    )
+    if not question.data:
+        raise HTTPException(status_code=404, detail="Question not found")
+    if question.data["question_type"] != "essay":
+        raise HTTPException(status_code=400, detail="Image scan is only supported for essay questions")
+
+    content = await file.read()
+    mime_type = file.content_type or ""
+    if not content:
+        raise HTTPException(status_code=400, detail="Image is empty")
+    if len(content) > MAX_SCAN_SIZE:
+        raise HTTPException(status_code=413, detail="Image too large (max 12 MB)")
+    if mime_type not in ALLOWED_SCAN_MIME:
+        raise HTTPException(status_code=415, detail="Only JPEG, PNG and WebP are supported")
+    if not _validate_image_magic(content, mime_type):
+        raise HTTPException(status_code=415, detail="File content does not match its image MIME type")
+
+    extension = {
+        "image/jpeg": "jpg",
+        "image/png": "png",
+        "image/webp": "webp",
+    }[mime_type]
+    storage_path = (
+        f"projects/{project_id_str}/users/{current_user.user_id}/"
+        f"quiz/{session_id_str}/{question_id_str}/{uuid4().hex}.{extension}"
+    )
+
+    db.storage.from_("quiz-submissions").upload(
+        storage_path,
+        content,
+        {"content-type": mime_type},
+    )
+
+    try:
+        ocr = await run_in_threadpool(
+            get_ocr_service().extract,
+            content,
+            mime_type,
+        )
+    except Exception as exc:
+        db.storage.from_("quiz-submissions").remove([storage_path])
+        raise HTTPException(status_code=502, detail="OCR failed") from exc
+
+    existing = (
+        db.table("quiz_attempts")
+        .select("id, image_storage_path")
+        .eq("quiz_session_id", session_id_str)
+        .eq("question_id", question_id_str)
+        .eq("user_id", current_user.user_id)
+        .maybe_single()
+        .execute()
+    )
+
+    now = datetime.now(timezone.utc).isoformat()
+    payload = {
+        "quiz_session_id": session_id_str,
+        "question_id": question_id_str,
+        "user_id": current_user.user_id,
+        "project_id": project_id_str,
+        "submission_type": "image_scan",
+        "question_text_snapshot": question.data["question_text"],
+        "options_snapshot": question.data.get("options"),
+        "rubric_snapshot": question.data.get("rubric"),
+        "max_score_snapshot": question.data["max_score"],
+        "user_answer": None,
+        "ocr_raw_text": ocr["text"],
+        "ocr_confirmed_text": None,
+        "ocr_uncertain_regions": ocr["uncertain_regions"],
+        "image_storage_path": storage_path,
+        "image_deleted_at": None,
+        "score": None,
+        "is_correct": None,
+        "feedback": None,
+        "grading_method": None,
+        "model_name": question.data.get("model_name"),
+        "prompt_version": question.data.get("prompt_version"),
+        "status": "ocr_pending_confirmation",
+        "submitted_at": None,
+        "graded_at": None,
+    }
+
+    old_path = None
+    if existing.data:
+        old_path = existing.data.get("image_storage_path")
+        attempt = (
+            db.table("quiz_attempts")
+            .update(payload)
+            .eq("id", existing.data["id"])
+            .execute()
+        ).data[0]
+    else:
+        attempt = db.table("quiz_attempts").insert(payload).execute().data[0]
+
+    if old_path and old_path != storage_path:
+        try:
+            db.storage.from_("quiz-submissions").remove([old_path])
+        except Exception:
+            pass
+
+    return attempt
+
+
+@router.post("/quiz-attempts/{attempt_id}/confirm-scan")
+async def confirm_essay_scan(
+    attempt_id: UUID,
+    body: ConfirmScanRequest,
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+) -> dict:
+    db = get_supabase_admin()
+    attempt = (
+        db.table("quiz_attempts")
+        .select("*")
+        .eq("id", str(attempt_id))
+        .eq("user_id", current_user.user_id)
+        .maybe_single()
+        .execute()
+    )
+    if not attempt.data:
+        raise HTTPException(status_code=404, detail="Quiz attempt not found")
+    if attempt.data["submission_type"] != "image_scan":
+        raise HTTPException(status_code=400, detail="Attempt is not an image scan")
+    if attempt.data["status"] != "ocr_pending_confirmation":
+        raise HTTPException(status_code=409, detail="OCR text is not awaiting confirmation")
+    if not attempt.data.get("question_id"):
+        raise HTTPException(status_code=400, detail="Original question is unavailable")
+
+    question = (
+        db.table("questions")
+        .select("*")
+        .eq("id", attempt.data["question_id"])
+        .maybe_single()
+        .execute()
+    )
+    if not question.data:
+        raise HTTPException(status_code=404, detail="Question not found")
+
+    confirmed_text = body.text.strip()
+    graded = await run_in_threadpool(
+        get_quiz_service().grade_essay,
+        question.data,
+        confirmed_text,
+    )
+
+    now = datetime.now(timezone.utc).isoformat()
+    result = (
+        db.table("quiz_attempts")
+        .update({
+            "user_answer": confirmed_text,
+            "ocr_confirmed_text": confirmed_text,
+            "score": graded["score"],
+            "is_correct": graded["is_correct"],
+            "feedback": graded["feedback"],
+            "grading_method": graded["grading_method"],
+            "status": "graded",
+            "submitted_at": now,
+            "graded_at": now,
+        })
+        .eq("id", str(attempt_id))
+        .eq("user_id", current_user.user_id)
+        .execute()
+    )
+    updated = result.data[0]
+
+    score_ratio = graded["score"] / float(question.data["max_score"] or 1)
+    await run_in_threadpool(
+        get_quiz_service().update_review_state,
+        current_user.user_id,
+        attempt.data["project_id"],
+        attempt.data["question_id"],
+        score_ratio,
+    )
+
+    return updated
+
+
+@router.get("/quiz-attempts/{attempt_id}/scan-url")
+async def get_scan_signed_url(
+    attempt_id: UUID,
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+) -> dict:
+    db = get_supabase_admin()
+    attempt = (
+        db.table("quiz_attempts")
+        .select("id, image_storage_path")
+        .eq("id", str(attempt_id))
+        .eq("user_id", current_user.user_id)
+        .maybe_single()
+        .execute()
+    )
+    if not attempt.data:
+        raise HTTPException(status_code=404, detail="Quiz attempt not found")
+    if not attempt.data.get("image_storage_path"):
+        raise HTTPException(status_code=404, detail="Scan image is unavailable")
+
+    signed = db.storage.from_("quiz-submissions").create_signed_url(
+        attempt.data["image_storage_path"],
+        300,
+    )
+    return {"signed_url": signed["signedURL"]}
+
+
+@router.delete(
+    "/quiz-attempts/{attempt_id}/scan",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+async def delete_scan_image(
+    attempt_id: UUID,
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+) -> Response:
+    db = get_supabase_admin()
+    attempt = (
+        db.table("quiz_attempts")
+        .select("id, image_storage_path")
+        .eq("id", str(attempt_id))
+        .eq("user_id", current_user.user_id)
+        .maybe_single()
+        .execute()
+    )
+    if not attempt.data:
+        raise HTTPException(status_code=404, detail="Quiz attempt not found")
+
+    path = attempt.data.get("image_storage_path")
+    if path:
+        db.storage.from_("quiz-submissions").remove([path])
+
+    db.table("quiz_attempts").update({
+        "image_storage_path": None,
+        "image_deleted_at": datetime.now(timezone.utc).isoformat(),
+    }).eq("id", str(attempt_id)).eq(
+        "user_id", current_user.user_id
+    ).execute()
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
