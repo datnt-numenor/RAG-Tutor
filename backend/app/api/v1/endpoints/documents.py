@@ -331,7 +331,8 @@ async def get_document_detail(
         db.table("document_versions")
         .select(
             "id, version_number, original_filename, mime_type, file_size, "
-            "page_count, status, created_at, processed_at"
+            "page_count, status, summary, summary_status, "
+            "embedding_model, chunker_version, created_at, processed_at"
         )
         .eq("document_id", str(document_id))
         .eq("project_id", str(project_id))
