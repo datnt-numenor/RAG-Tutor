@@ -426,29 +426,12 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
                 {item.role === "assistant" && item.citations && item.citations.length > 0 && (
                   <div className="mt-2 space-y-2">
                     {item.citations.map((source, index) => (
-                      <div key={index} className="rounded-xl border border-[#755640]/10 bg-[#fff9f2] p-3 text-xs">
-                        <div className="flex items-start gap-2">
-                          <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-[#dce6d8] font-semibold text-[#597154]">
-                            {index + 1}
-                          </span>
-                          <div>
-                            <div className="font-semibold">
-                              {source.source_file || "Document"}
-                              {source.source_deleted && (
-                                <span className="ml-2 rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-600">
-                                  source deleted
-                                </span>
-                              )}
-                            </div>
-                            <div className="mt-1 text-[#8a7b70]">
-                              {source.page ? `Page ${source.page}` : "Page unknown"}
-                              {typeof source.similarity === "number"
-                                ? ` · similarity ${source.similarity.toFixed(3)}`
-                                : ""}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
+                      <CitationCard
+                        key={index}
+                        source={source}
+                        index={index}
+                        projectId={projectId}
+                      />
                     ))}
                   </div>
                 )}
@@ -490,17 +473,12 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
                   {streamingSources.length > 0 && (
                     <div className="mt-2 space-y-2">
                       {streamingSources.map((source, index) => (
-                        <div
+                        <CitationCard
                           key={index}
-                          className="rounded-xl border border-[#755640]/10 bg-[#fff9f2] p-3 text-xs"
-                        >
-                          <div className="font-semibold">
-                            {index + 1}. {source.source_file || "Document"}
-                          </div>
-                          <div className="mt-1 text-[#8a7b70]">
-                            {source.page ? "Page " + source.page : "Page unknown"}
-                          </div>
-                        </div>
+                          source={source}
+                          index={index}
+                          projectId={projectId}
+                        />
                       ))}
                     </div>
                   )}
@@ -560,5 +538,73 @@ function JobIcon({ status }: { status: string }) {
     <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#e8e1f2] text-[#77659d]">
       <Loader2 size={19} className="animate-spin" />
     </div>
+  );
+}
+
+
+function CitationCard({
+  source,
+  index,
+  projectId,
+}: {
+  source: Citation;
+  index: number;
+  projectId: string;
+}) {
+  const canOpen =
+    !source.source_deleted &&
+    Boolean(source.document_id) &&
+    Boolean(source.document_version_id);
+
+  const body = (
+    <div className="flex items-start gap-2">
+      <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-[#dce6d8] font-semibold text-[#597154]">
+        {index + 1}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="truncate font-semibold">
+          {source.source_file || "Document"}
+          {source.source_deleted && (
+            <span className="ml-2 rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-600">
+              source deleted
+            </span>
+          )}
+        </div>
+        <div className="mt-1 text-[#8a7b70]">
+          {source.page ? "Page " + source.page : "Page unknown"}
+          {typeof source.similarity === "number"
+            ? " · similarity " + source.similarity.toFixed(3)
+            : ""}
+          {canOpen ? " · Open source →" : ""}
+        </div>
+      </div>
+    </div>
+  );
+
+  if (!canOpen) {
+    return (
+      <div className="rounded-xl border border-[#755640]/10 bg-[#fff9f2] p-3 text-xs">
+        {body}
+      </div>
+    );
+  }
+
+  const href =
+    "/projects/" +
+    projectId +
+    "/documents/" +
+    source.document_id +
+    "?version=" +
+    encodeURIComponent(source.document_version_id!) +
+    "&page=" +
+    String(source.page ?? 1);
+
+  return (
+    <Link
+      href={href}
+      className="block rounded-xl border border-[#755640]/10 bg-[#fff9f2] p-3 text-xs transition hover:border-[#b9634c]/25 hover:bg-white"
+    >
+      {body}
+    </Link>
   );
 }
