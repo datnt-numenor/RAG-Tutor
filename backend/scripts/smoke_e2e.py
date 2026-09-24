@@ -217,6 +217,12 @@ def main() -> None:
         default=180,
         help="Maximum seconds to wait for Celery ingest.",
     )
+    parser.add_argument(
+        "--eval-output",
+        type=Path,
+        default=None,
+        help="Optional path to write a fixed RAG evaluation result JSON.",
+    )
     args = parser.parse_args()
 
     if not args.email or not args.password:
