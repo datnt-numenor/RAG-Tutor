@@ -162,6 +162,12 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
         <p className="mt-2 max-w-3xl text-[#7d7167]">
           {project.data?.description || "Upload tài liệu, ingest thành chunks rồi chat bằng RAG trong cùng project."}
         </p>
+        <Link
+          href={"/projects/" + projectId + "/roadmap"}
+          className="mt-4 inline-flex rounded-xl border border-[#b9634c]/20 bg-[#fff8f3] px-4 py-2 text-sm font-semibold text-[#9b4d3b]"
+        >
+          Roadmap & schedule
+        </Link>
       </section>
 
       <section className="grid gap-6 xl:grid-cols-[1.05fr_.95fr]">
