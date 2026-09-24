@@ -114,16 +114,14 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
         projectId,
         sessionId,
         content,
-        {
-          onMeta: (payload) => {
-            setStreamingSources(payload.sources ?? []);
-          },
-          onToken: (text) => {
-            setStreamingText((current) => current + text);
-          },
-          onError: (payload) => {
-            throw new Error(payload.message || "Streaming chat failed");
-          },
+        (event) => {
+          if (event.type === "meta") {
+            setStreamingSources(event.payload.sources ?? []);
+          } else if (event.type === "token") {
+            setStreamingText((current) => current + event.payload.text);
+          } else if (event.type === "error") {
+            throw new Error(event.payload.message);
+          }
         },
       );
     },
