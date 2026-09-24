@@ -8,6 +8,8 @@ This file tracks release gates that require a real runtime rather than code insp
 - [x] Core backend unit tests pass.
 - [x] Frontend lint passes.
 - [x] Next.js production build succeeds.
+- [x] Frontend dependency audit has no high/critical vulnerability.
+- [x] Backend CI/Render dependency set uses CPU-only PyTorch instead of CUDA runtimes.
 
 CI verified on `main` after release-validation merge (GitHub Actions run #129).
 
@@ -36,7 +38,7 @@ Requires real Redis, Celery, Gemini and app environment variables.
 ## Deployment
 
 - [ ] Deploy API from `render.yaml`.
-- [ ] Deploy Celery worker and attach production Redis.
+- [ ] Choose worker hosting: current Render Background Worker is paid (`starter`); keep it for reliable Celery or select another worker host, then attach production Redis.
 - [ ] Deploy Next.js frontend to Vercel.
 - [ ] Configure production CORS and public frontend environment variables.
 - [ ] Run post-deploy smoke tests.
