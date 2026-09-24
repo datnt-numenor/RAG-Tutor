@@ -814,3 +814,20 @@ export async function removeProjectMember(
 ) {
   await api.delete(`/projects/${projectId}/members/${userId}`);
 }
+
+
+export type GlobalSearchResult = {
+  type: "project" | "document";
+  id: string;
+  project_id: string;
+  title: string;
+  subtitle: string | null;
+  href: string;
+};
+
+export async function globalSearch(query: string) {
+  const { data } = await api.get<GlobalSearchResult[]>("/search", {
+    params: { q: query },
+  });
+  return data;
+}
