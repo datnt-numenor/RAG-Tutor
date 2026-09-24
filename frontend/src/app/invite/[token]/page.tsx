@@ -109,6 +109,12 @@ export default function InvitePage({
               </div>
             )}
 
+            {reject.isError && (
+              <div className="mt-4 rounded-2xl bg-red-50 p-4 text-sm text-red-700">
+                Không thể từ chối invitation. Hãy đăng nhập bằng đúng email được mời.
+              </div>
+            )}
+
             <div className="mt-7 flex gap-3">
               <button
                 onClick={handleAccept}
@@ -119,13 +125,15 @@ export default function InvitePage({
                 {accessToken ? "Tham gia project" : "Đăng nhập để tham gia"}
               </button>
 
-              <button
-                onClick={() => reject.mutate()}
-                disabled={reject.isPending}
-                className="rounded-2xl border border-[#755640]/15 bg-white/70 px-5 py-3 font-semibold text-[#76675d]"
-              >
-                Từ chối
-              </button>
+              {accessToken && (
+                <button
+                  onClick={() => reject.mutate()}
+                  disabled={reject.isPending}
+                  className="rounded-2xl border border-[#755640]/15 bg-white/70 px-5 py-3 font-semibold text-[#76675d] disabled:opacity-60"
+                >
+                  {reject.isPending ? "Đang từ chối..." : "Từ chối"}
+                </button>
+              )}
             </div>
           </>
         )}
