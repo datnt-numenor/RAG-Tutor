@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     # ── Gemini ────────────────────────────────────────────────────────────────
     gemini_api_key: str
     gemini_model: str = "gemini-3.6-flash"
-    gemini_aux_model: str = "gemini-2.5-flash-lite"
+    gemini_aux_model: str = "gemini-3.5-flash-lite"
 
     # ── Embedding ─────────────────────────────────────────────────────────────
     embedding_model: str = "paraphrase-multilingual-MiniLM-L12-v2"
