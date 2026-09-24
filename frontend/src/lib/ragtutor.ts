@@ -831,3 +831,27 @@ export async function globalSearch(query: string) {
   });
   return data;
 }
+
+
+export type UserProfile = {
+  user_id: string;
+  email: string;
+  full_name: string | null;
+  avatar_url: string | null;
+  timezone: string;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export async function getMyProfile() {
+  const { data } = await api.get<UserProfile>("/auth/me");
+  return data;
+}
+
+export async function updateMyProfile(payload: {
+  full_name?: string;
+  timezone?: string;
+}) {
+  const { data } = await api.patch<UserProfile>("/auth/me", payload);
+  return data;
+}
