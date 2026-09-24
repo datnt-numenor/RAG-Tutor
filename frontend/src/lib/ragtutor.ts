@@ -635,3 +635,46 @@ export async function startQuizFromBank(
   }>(`/projects/${projectId}/quiz/start`, payload);
   return data;
 }
+
+
+export type ProgressSnapshot = {
+  id: string;
+  user_id: string;
+  project_id: string;
+  snapshot_date: string;
+  questions_attempted: number;
+  questions_correct: number;
+  avg_score: number;
+  topics_covered: number;
+  study_minutes: number;
+  created_at: string;
+  projects?: { name: string } | null;
+};
+
+export async function getProgressHistory(
+  days = 30,
+  projectId?: string,
+) {
+  const { data } = await api.get<ProgressSnapshot[]>("/progress/history", {
+    params: {
+      days,
+      ...(projectId ? { project_id: projectId } : {}),
+    },
+  });
+  return data;
+}
+
+export async function rebuildProgress(
+  projectId: string,
+  days = 30,
+) {
+  const { data } = await api.post<{
+    project_id: string;
+    start_date: string;
+    end_date: string;
+    snapshots_rebuilt: number;
+  }>(`/projects/${projectId}/progress/rebuild`, null, {
+    params: { days },
+  });
+  return data;
+}
