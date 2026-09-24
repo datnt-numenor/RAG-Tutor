@@ -223,7 +223,13 @@ export type QuizAttempt = {
   id: string;
   quiz_session_id: string;
   question_id: string | null;
+  submission_type?: "text" | "image_scan";
   user_answer: string | null;
+  ocr_raw_text?: string | null;
+  ocr_confirmed_text?: string | null;
+  ocr_uncertain_regions?: Array<{ text: string; reason: string }> | null;
+  image_storage_path?: string | null;
+  image_deleted_at?: string | null;
   score: number | null;
   is_correct: boolean | null;
   feedback: string | null;
@@ -577,4 +583,43 @@ export async function completeSchedule(scheduleId: string) {
 
 export async function uncompleteSchedule(scheduleId: string) {
   await api.delete(\`/schedules/\${scheduleId}/complete\`);
+}
+
+
+export async function uploadEssayScan(
+  projectId: string,
+  sessionId: string,
+  questionId: string,
+  file: File,
+) {
+  const form = new FormData();
+  form.append("file", file);
+  const { data } = await api.post<QuizAttempt>(
+    \`/projects/\${projectId}/quiz/sessions/\${sessionId}/questions/\${questionId}/scan\`,
+    form,
+    { headers: { "Content-Type": "multipart/form-data" } },
+  );
+  return data;
+}
+
+export async function confirmEssayScan(
+  attemptId: string,
+  text: string,
+) {
+  const { data } = await api.post<QuizAttempt>(
+    \`/quiz-attempts/\${attemptId}/confirm-scan\`,
+    { text },
+  );
+  return data;
+}
+
+export async function getEssayScanSignedUrl(attemptId: string) {
+  const { data } = await api.get<{ signed_url: string }>(
+    \`/quiz-attempts/\${attemptId}/scan-url\`,
+  );
+  return data.signed_url;
+}
+
+export async function deleteEssayScan(attemptId: string) {
+  await api.delete(\`/quiz-attempts/\${attemptId}/scan\`);
 }
