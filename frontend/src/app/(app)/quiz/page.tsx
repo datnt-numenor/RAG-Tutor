@@ -5,17 +5,20 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CheckCircle2,
   CircleHelp,
+  ImageUp,
   Loader2,
   Sparkles,
   XCircle,
 } from "lucide-react";
 import {
   answerQuizQuestion,
+  confirmEssayScan,
   generateQuiz,
   getQuizSession,
   listProjects,
   listQuizSessions,
   submitQuiz,
+  uploadEssayScan,
   type QuizAttempt,
   type QuizQuestion,
 } from "@/lib/ragtutor";
@@ -84,6 +87,48 @@ export default function QuizPage() {
     },
   });
 
+  const scanUpload = useMutation({
+    mutationFn: ({
+      questionId,
+      file,
+    }: {
+      questionId: string;
+      file: File;
+    }) =>
+      uploadEssayScan(
+        selectedProjectId,
+        effectiveSessionId!,
+        questionId,
+        file,
+      ),
+    onSuccess: async (attempt) => {
+      if (attempt.question_id) {
+        setAnswers((current) => ({
+          ...current,
+          [attempt.question_id!]: attempt.ocr_raw_text ?? "",
+        }));
+      }
+      await queryClient.invalidateQueries({
+        queryKey: ["quiz-session", selectedProjectId, effectiveSessionId],
+      });
+    },
+  });
+
+  const confirmScan = useMutation({
+    mutationFn: ({
+      attemptId,
+      text,
+    }: {
+      attemptId: string;
+      text: string;
+    }) => confirmEssayScan(attemptId, text),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: ["quiz-session", selectedProjectId, effectiveSessionId],
+      });
+    },
+  });
+
   const submit = useMutation({
     mutationFn: () => submitQuiz(selectedProjectId, effectiveSessionId!),
     onSuccess: async () => {
@@ -106,7 +151,9 @@ export default function QuizPage() {
     return map;
   }, [activeQuiz.data?.attempts]);
 
-  const answeredCount = attemptsByQuestion.size;
+  const answeredCount = Array.from(attemptsByQuestion.values()).filter(
+    (attempt) => attempt.status === "graded",
+  ).length;
   const totalQuestions = activeQuiz.data?.questions.length ?? 0;
 
   return (
@@ -201,6 +248,8 @@ export default function QuizPage() {
                 value={answers[question.id] ?? ""}
                 disabled={
                   answer.isPending ||
+                  scanUpload.isPending ||
+                  confirmScan.isPending ||
                   activeQuiz.data.session.status !== "in_progress"
                 }
                 onChange={(value) =>
@@ -213,6 +262,18 @@ export default function QuizPage() {
                   answer.mutate({
                     questionId: question.id,
                     value,
+                  })
+                }
+                onUploadScan={(file) =>
+                  scanUpload.mutate({
+                    questionId: question.id,
+                    file,
+                  })
+                }
+                onConfirmScan={(attemptId, text) =>
+                  confirmScan.mutate({
+                    attemptId,
+                    text,
                   })
                 }
               />
@@ -309,6 +370,8 @@ function QuestionCard({
   disabled,
   onChange,
   onSubmit,
+  onUploadScan,
+  onConfirmScan,
 }: {
   index: number;
   question: QuizQuestion;
@@ -317,11 +380,19 @@ function QuestionCard({
   disabled: boolean;
   onChange: (value: string) => void;
   onSubmit: (value: string) => void;
+  onUploadScan: (file: File) => void;
+  onConfirmScan: (attemptId: string, text: string) => void;
 }) {
+  const effectiveValue =
+    value ||
+    (attempt?.status === "ocr_pending_confirmation"
+      ? attempt.ocr_raw_text ?? ""
+      : "");
+
   function submit(e: FormEvent) {
     e.preventDefault();
-    if (!value.trim() || attempt) return;
-    onSubmit(value.trim());
+    if (!effectiveValue.trim() || attempt) return;
+    onSubmit(effectiveValue.trim());
   }
 
   return (
@@ -359,15 +430,72 @@ function QuestionCard({
                 </label>
               ))}
             </div>
+          ) : attempt?.status === "ocr_pending_confirmation" ? (
+            <div className="mt-5">
+              <div className="rounded-2xl bg-[#fff8e8] p-4 text-sm text-[#7e652f]">
+                OCR đã xong. Hãy đọc lại và sửa text trước khi chấm.
+              </div>
+              <textarea
+                rows={7}
+                value={effectiveValue}
+                disabled={disabled}
+                onChange={(e) => onChange(e.target.value)}
+                className="mt-3 w-full resize-y rounded-2xl border border-[#c49a4a]/20 bg-white/75 p-4 text-sm leading-6 outline-none focus:border-[#b9634c]/35"
+              />
+              {attempt.ocr_uncertain_regions &&
+                attempt.ocr_uncertain_regions.length > 0 && (
+                  <div className="mt-3 rounded-2xl bg-[#f7efe2] p-4">
+                    <div className="text-xs font-semibold uppercase tracking-wide text-[#8c6b39]">
+                      OCR chưa chắc chắn
+                    </div>
+                    <ul className="mt-2 space-y-1 text-xs text-[#78664f]">
+                      {attempt.ocr_uncertain_regions.map((item, index) => (
+                        <li key={index}>
+                          “{item.text}” — {item.reason}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              <button
+                type="button"
+                disabled={disabled || !effectiveValue.trim()}
+                onClick={() =>
+                  onConfirmScan(attempt.id, effectiveValue.trim())
+                }
+                className="mt-4 rounded-xl bg-[#8f4738] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
+              >
+                Xác nhận OCR & chấm bài
+              </button>
+            </div>
           ) : (
-            <textarea
-              rows={5}
-              value={value}
-              disabled={disabled || Boolean(attempt)}
-              onChange={(e) => onChange(e.target.value)}
-              placeholder="Nhập câu trả lời..."
-              className="mt-5 w-full resize-y rounded-2xl border border-[#755640]/12 bg-white/65 p-4 text-sm leading-6 outline-none focus:border-[#b9634c]/35"
-            />
+            <div className="mt-5">
+              <textarea
+                rows={5}
+                value={effectiveValue}
+                disabled={disabled || Boolean(attempt)}
+                onChange={(e) => onChange(e.target.value)}
+                placeholder="Nhập câu trả lời..."
+                className="w-full resize-y rounded-2xl border border-[#755640]/12 bg-white/65 p-4 text-sm leading-6 outline-none focus:border-[#b9634c]/35"
+              />
+              {!attempt && (
+                <label className="mt-3 inline-flex cursor-pointer items-center gap-2 rounded-xl border border-[#8b9d83]/25 bg-[#eef3eb] px-4 py-2.5 text-sm font-semibold text-[#587052]">
+                  <ImageUp size={16} />
+                  Nộp ảnh scan
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    className="hidden"
+                    disabled={disabled}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) onUploadScan(file);
+                      e.target.value = "";
+                    }}
+                  />
+                </label>
+              )}
+            </div>
           )}
 
           {attempt ? (
@@ -394,7 +522,7 @@ function QuestionCard({
             </div>
           ) : (
             <button
-              disabled={disabled || !value.trim()}
+              disabled={disabled || !effectiveValue.trim()}
               className="mt-4 rounded-xl bg-[#8f4738] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
             >
               Chấm câu này
