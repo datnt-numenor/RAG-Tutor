@@ -21,7 +21,7 @@ Chatbot cho phép người dùng upload tài liệu (PDF, docx) và đặt câu 
 **Về mặt kỹ thuật (quy mô "tầm trung"):**
 - Chunking tự viết (giữ nguyên để thể hiện chiều sâu hiểu biết), tích hợp LangChain làm khung orchestration (vectorstore, retriever, structured output)
 - Supabase (Postgres + pgvector) làm database thống nhất cho cả vector lẫn dữ liệu quan hệ
-- **Giao diện chuyển từ Streamlit sang ReactJS**, kết nối với backend qua REST API — tách bạch frontend/backend như một ứng dụng web thật, không còn là 1 script Python gộp chung UI và logic
+- **Giao diện chuyển từ Streamlit sang Next.js 16 App Router + React 19**, kết nối với backend qua REST API — tách bạch frontend/backend như một ứng dụng web thật, không còn là 1 script Python gộp chung UI và logic
 
 Các tính năng này biến dự án từ "chatbot hỏi-đáp" chung chung thành **AI Study Assistant** hoàn chỉnh — một câu chuyện CV rõ ràng và khác biệt hơn.
 
@@ -29,9 +29,9 @@ Các tính năng này biến dự án từ "chatbot hỏi-đáp" chung chung th�
 
 ## 2. Kiến trúc hệ thống
 
-### Tổng quan (mới, do đổi sang React)
+### Tổng quan (frontend web tách riêng)
 ```
-[React Frontend (Vite)] ⇄ REST API (JSON / multipart) ⇄ [FastAPI Backend]
+[Next.js 16 App Router + React 19] ⇄ REST API (JSON / multipart) ⇄ [FastAPI Backend]
                                                                 ↓
                                     [LangChain orchestration + Gemini API + Supabase]
 ```
@@ -56,7 +56,7 @@ Hệ thống backend gồm các luồng ingestion/RAG, roadmap, quiz, cộng tá
 
 ### (b) Luồng chat hỏi-đáp
 ```
-[User gửi câu hỏi trên React] → POST /projects/{project_id}/chat/sessions/{session_id}/messages
+[User gửi câu hỏi trên Next.js] → POST /projects/{project_id}/chat/sessions/{session_id}/messages
                                          → [Embedding câu hỏi] → [RPC match_chunks lọc project + document ready]
                                                                                 ↓
                                                           [Threshold + rerank → LLM sinh câu trả lời + trích dẫn]
@@ -81,7 +81,7 @@ POST /projects/{project_id}/roadmap/generate → [Chunk trong Supabase] → [LLM
 POST /projects/{project_id}/questions/generate → [Chunk/chủ đề] → [LLM sinh câu hỏi] → [Bảng `questions`]
                                                           (MCQ + tự luận, kèm đáp án/rubric, gắn chunk nguồn)
                                                                     ↓
-[User bắt đầu quiz session trên React]
+[User bắt đầu quiz session trên Next.js]
       ├─ Trắc nghiệm → chọn đáp án → POST /quiz-sessions/{id}/answers → [Chấm rule-based]
       └─ Tự luận  ├─ Gõ text ──────────────────────────────┐
                   └─ Upload ảnh scan → POST /quiz-sessions/{id}/answers/scan
@@ -93,7 +93,7 @@ POST /projects/{project_id}/questions/generate → [Chunk/chủ đề] → [LLM 
                                                                 ↓
                               [Điểm + nhận xét + nguồn + model/prompt version] → [`quiz_attempts`]
                                                                 ↓
-                                                    hiển thị kết quả trên React
+                                                    hiển thị kết quả trên Next.js
 ```
 
 ### (e) Luồng mời thành viên và phân quyền
@@ -220,8 +220,8 @@ def to_langchain_documents(chunks_with_metadata):
 | Vector DB | Supabase Postgres + `pgvector` + RPC `match_chunks` | Filter theo project/document version ngay trong SQL, có similarity threshold; dùng HNSW sau khi có dữ liệu benchmark |
 | LLM sinh câu trả lời | Gemini Flash model ổn định được cấu hình bằng environment | Không hard-code quota/model alias trong plan; kiểm tra model và rate limit hiện hành trước deploy |
 | **Backend API** | **FastAPI** | Expose REST endpoint cho toàn bộ logic (upload, chat, roadmap, quiz); xử lý CORS để React gọi được |
-| **Frontend** | **ReactJS (Vite)** | SPA, gọi backend qua REST API (JSON cho text, multipart cho file/ảnh) |
-| Giao tiếp Frontend ↔ Backend | REST API (Axios/fetch), CORS middleware trong FastAPI | API key (Gemini, Supabase) chỉ lưu ở backend, không lộ ra frontend |
+| **Frontend** | **Next.js 16 App Router + React 19** | TypeScript web app, gọi FastAPI qua REST API; TanStack Query quản lý server state |
+| Giao tiếp Frontend ↔ Backend | REST API (Axios/fetch) + SSE cho chat streaming, CORS middleware trong FastAPI | Secret Gemini/Supabase service key chỉ lưu ở backend; frontend chỉ dùng public Supabase anon key |
 | Phân tích & gắn nhãn chủ đề | Gemini Flash + structured output | Trích xuất topic, nguồn và prerequisite; lưu model/prompt version |
 | Sinh lộ trình học | Rule-based trên topics/prerequisites + diagnostic/time constraints | Target score không phải đầu vào duy nhất |
 | Sinh câu hỏi (MCQ + tự luận) | Gemini Flash + LangChain structured output | Giới hạn theo knowledge units, source chunks và dedup embedding |
@@ -234,7 +234,7 @@ def to_langchain_documents(chunks_with_metadata):
 | Chấm tự luận | Gemini Flash (LLM-as-judge) | Chấm theo rubric + evidence, lưu model/prompt version; không chỉ so với đáp án mẫu |
 | Nộp bài bằng ảnh scan | Gemini multimodal/vision | Lưu private, OCR trước, bắt buộc user xác nhận/sửa text rồi mới chấm |
 | Deploy Backend | Render free tier (hoặc HuggingFace Spaces bằng Docker) | Free, dễ deploy từ GitHub; lưu ý free tier có thể "ngủ" sau thời gian không hoạt động (cold start request đầu tiên chậm) |
-| Deploy Frontend | Vercel hoặc Netlify free tier | Free, deploy React SPA từ GitHub, có HTTPS + custom domain sẵn |
+| Deploy Frontend | Vercel | Deploy Next.js từ GitHub, có HTTPS; public environment variables được cấu hình ở hosting provider |
 
 > **Lưu ý:**
 > - Rate limit/điều khoản free tier của Gemini có thể thay đổi theo thời gian — kiểm tra lại trên Google AI Studio trước khi build.
@@ -328,7 +328,7 @@ Sau khi MVP chạy ổn, cân nhắc chọn 1 domain cụ thể để có câu c
 ## 7. Gợi ý viết cho CV
 
 Ví dụ câu mô tả:
-> "Xây dựng AI Study Assistant multi-user bằng React + FastAPI: RAG đa tài liệu tiếng Việt có trích dẫn và cơ chế từ chối khi thiếu bằng chứng; ingestion bất đồng bộ có versioning; mời nhóm học với RLS; PDF annotation theo tọa độ; sinh quiz, chấm tự luận/ảnh viết tay qua luồng OCR xác nhận; spaced repetition và progress dashboard. Backend dùng Supabase Auth/Postgres/pgvector/Storage, RPC retrieval tùy biến và LangChain cho orchestration/structured output."
+> "Xây dựng AI Study Assistant multi-user bằng Next.js + FastAPI: RAG đa tài liệu tiếng Việt có trích dẫn và cơ chế từ chối khi thiếu bằng chứng; ingestion bất đồng bộ có versioning; mời nhóm học với RLS; PDF annotation theo tọa độ; sinh quiz, chấm tự luận/ảnh viết tay qua luồng OCR xác nhận; spaced repetition và progress dashboard. Backend dùng Supabase Auth/Postgres/pgvector/Storage, RPC retrieval tùy biến và LangChain cho orchestration/structured output."
 
 Nên có con số cụ thể nếu đo được, ví dụ: % câu trả lời đúng trên bộ test, thời gian phản hồi trung bình, số lượng tài liệu/định dạng hỗ trợ, số câu hỏi sinh ra mỗi tài liệu, độ chính xác OCR trên ảnh scan, độ tương quan giữa điểm LLM chấm và điểm người chấm thủ công (nếu đo thử).
 
