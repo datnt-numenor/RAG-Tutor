@@ -123,8 +123,8 @@ async def list_annotations(
     project_id: UUID,
     document_id: UUID,
     version_id: UUID,
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
     page: int | None = None,
-    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)] = None,
 ) -> list[dict]:
     db = get_supabase_admin()
     _assert_member(db, str(project_id), current_user.user_id)
