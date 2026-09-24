@@ -444,7 +444,13 @@ async def get_signed_url(
     current_user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict:
     db = get_supabase_admin()
-    ver = db.table("document_versions").select("storage_path, project_id").eq("id", str(version_id)).single().execute()
+    ver = (
+        db.table("document_versions")
+        .select("storage_path, project_id")
+        .eq("id", str(version_id))
+        .maybe_single()
+        .execute()
+    )
     if not ver.data:
         raise HTTPException(status_code=404, detail="Version not found")
 
