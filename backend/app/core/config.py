@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     # ── Embedding ─────────────────────────────────────────────────────────────
     embedding_model: str = "paraphrase-multilingual-MiniLM-L12-v2"
     embedding_dim: int = 384
-    embedding_batch_size: int = 16
+    embedding_batch_size: int = 8
 
     # ── Redis / Celery ────────────────────────────────────────────────────────
     redis_url: str = "redis://localhost:6379/0"
