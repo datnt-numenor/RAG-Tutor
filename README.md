@@ -291,7 +291,7 @@ npm run lint
 npm run build
 ```
 
-GitHub Actions CI is defined in `.github/workflows/ci.yml`.
+GitHub Actions CI is defined in `.github/workflows/ci.yml`. It compiles/tests the backend, runs `npm audit --audit-level=high`, lints the frontend and performs a production Next.js build.
 
 ## End-to-end smoke test
 
@@ -423,6 +423,8 @@ Full API reference is available through Swagger in non-production mode.
 ## Deploy
 
 - `render.yaml` provisions the FastAPI web service and Celery worker blueprint.
+- The API can use Render free web compute, but Render Background Worker compute is paid; the current `starter` worker is therefore not a zero-cost deployment.
+- Backend requirements pin the official CPU-only PyTorch wheel so CI/Render do not pull CUDA/NVIDIA runtimes.
 - `frontend/vercel.json` contains the Vercel Next.js build configuration.
 - Redis remains an external deployment dependency and is supplied through `REDIS_URL`.
 - Production secrets are configured in the hosting provider, never committed to Git.
@@ -432,6 +434,5 @@ Full API reference is available through Swagger in non-production mode.
 - run full E2E on a real local/deployed environment with Redis/Celery/PDF/Gemini;
 - add multi-user authorization integration tests using two independent accounts;
 - run the fixed RAG benchmark and record real metrics;
-- verify GitHub Actions after the latest frontend/backend changes;
 - enable production Supabase Auth email confirmation and leaked-password protection where available;
 - deploy API/worker/frontend and run post-deploy smoke tests.
