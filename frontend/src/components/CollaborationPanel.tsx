@@ -1,10 +1,12 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Copy, Crown, MailPlus, Trash2, UserRound, Users } from "lucide-react";
 import {
   createProjectInvitation,
+  deleteProject,
   listProjectInvitations,
   listProjectMembers,
   removeProjectMember,
@@ -14,6 +16,7 @@ import { supabase } from "@/lib/supabase";
 
 export function CollaborationPanel({ projectId }: { projectId: string }) {
   const queryClient = useQueryClient();
+  const router = useRouter();
   const [email, setEmail] = useState("");
   const [latestLink, setLatestLink] = useState("");
   const [currentUserId, setCurrentUserId] = useState("");
@@ -72,6 +75,15 @@ export function CollaborationPanel({ projectId }: { projectId: string }) {
       await queryClient.invalidateQueries({
         queryKey: ["project-members", projectId],
       });
+    },
+  });
+
+  const removeProject = useMutation({
+    mutationFn: () => deleteProject(projectId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["projects"] });
+      router.replace("/projects");
+      router.refresh();
     },
   });
 
@@ -241,6 +253,35 @@ export function CollaborationPanel({ projectId }: { projectId: string }) {
                 Chưa có invitation nào.
               </div>
             )}
+          </div>
+
+          <div className="my-5 border-t border-red-200/70" />
+
+          <div className="rounded-2xl border border-red-200 bg-red-50/70 p-4">
+            <div className="text-sm font-semibold text-red-800">
+              Delete project permanently
+            </div>
+            <p className="mt-1 text-xs leading-5 text-red-700">
+              Xóa toàn bộ documents, chunks, chat, quiz, roadmap, schedules,
+              annotations và file Storage thuộc project này.
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                if (
+                  window.confirm(
+                    "Xóa vĩnh viễn project này? Thao tác không thể hoàn tác.",
+                  )
+                ) {
+                  removeProject.mutate();
+                }
+              }}
+              disabled={removeProject.isPending}
+              className="mt-3 inline-flex items-center gap-2 rounded-xl bg-red-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+            >
+              <Trash2 size={15} />
+              {removeProject.isPending ? "Đang xóa..." : "Delete project"}
+            </button>
           </div>
         </>
       )}
