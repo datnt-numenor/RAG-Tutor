@@ -36,6 +36,10 @@ class StartQuizRequest(BaseModel):
     question_type: str | None = Field(None, pattern="^(mcq|essay)$")
 
 
+class StartReviewRequest(BaseModel):
+    count: int = Field(10, ge=1, le=50)
+
+
 def _assert_member(db, project_id: str, user_id: str) -> None:
     member = (
         db.table("project_members")
@@ -64,6 +68,34 @@ def _assert_owner(db, project_id: str, user_id: str) -> None:
             status_code=403,
             detail="Only the project owner can generate questions",
         )
+
+
+def _due_review_rows(
+    db,
+    project_id: str,
+    user_id: str,
+    limit: int,
+) -> list[dict]:
+    now = datetime.now(timezone.utc).isoformat()
+    rows = (
+        db.table("review_states")
+        .select(
+            "id, question_id, due_at, interval_days, repetitions, "
+            "ease_factor, last_score, last_reviewed_at, questions(*)"
+        )
+        .eq("project_id", project_id)
+        .eq("user_id", user_id)
+        .lte("due_at", now)
+        .order("due_at")
+        .limit(limit)
+        .execute()
+    ).data or []
+
+    return [
+        row
+        for row in rows
+        if (row.get("questions") or {}).get("status") == "active"
+    ]
 
 
 @router.post(
@@ -159,6 +191,81 @@ async def start_quiz_from_bank(
     return {
         "session": session,
         "questions": questions,
+    }
+
+
+@router.get("/projects/{project_id}/reviews/due")
+async def list_due_reviews(
+    project_id: UUID,
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    limit: int = 20,
+) -> list[dict]:
+    db = get_supabase_admin()
+    _assert_member(db, str(project_id), current_user.user_id)
+    limit = max(1, min(50, limit))
+    return _due_review_rows(
+        db,
+        str(project_id),
+        current_user.user_id,
+        limit,
+    )
+
+
+@router.post(
+    "/projects/{project_id}/reviews/start",
+    status_code=status.HTTP_201_CREATED,
+)
+async def start_due_review(
+    project_id: UUID,
+    body: StartReviewRequest,
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+) -> dict:
+    db = get_supabase_admin()
+    project_id_str = str(project_id)
+    _assert_member(db, project_id_str, current_user.user_id)
+
+    due_rows = _due_review_rows(
+        db,
+        project_id_str,
+        current_user.user_id,
+        body.count,
+    )
+    questions = [
+        row["questions"]
+        for row in due_rows
+        if row.get("questions")
+    ]
+    if not questions:
+        raise HTTPException(
+            status_code=400,
+            detail="No review questions are due right now",
+        )
+
+    question_ids = [question["id"] for question in questions]
+    max_score = sum(
+        float(question.get("max_score") or 0)
+        for question in questions
+    )
+
+    session = db.table("quiz_sessions").insert({
+        "project_id": project_id_str,
+        "user_id": current_user.user_id,
+        "status": "in_progress",
+        "question_ids": question_ids,
+        "max_score": max_score,
+    }).execute().data[0]
+
+    return {
+        "session": session,
+        "questions": questions,
+        "review_states": [
+            {
+                key: value
+                for key, value in row.items()
+                if key != "questions"
+            }
+            for row in due_rows
+        ],
     }
 
 
