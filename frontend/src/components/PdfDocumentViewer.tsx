@@ -170,10 +170,10 @@ export function PdfDocumentViewer({
       setLoadingPdf(true);
       try {
         const pdfjs = await import("pdfjs-dist");
-        pdfjs.GlobalWorkerOptions.workerSrc =
-          "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/" +
-          pdfjs.version +
-          "/pdf.worker.min.mjs";
+        pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+          "pdfjs-dist/build/pdf.worker.min.mjs",
+          import.meta.url,
+        ).toString();
 
         const task = pdfjs.getDocument(signedUrl.data);
         loadedPdf = await task.promise;
@@ -201,6 +201,7 @@ export function PdfDocumentViewer({
     if (!pdf || !canvasRef.current) return;
 
     let cancelled = false;
+    let renderTask: { promise: Promise<unknown>; cancel: () => void } | null = null;
     const canvas = canvasRef.current;
 
     async function renderPage() {
@@ -229,11 +230,19 @@ export function PdfDocumentViewer({
             ])
           : undefined;
 
-      await page.render({
+      renderTask = page.render({
         canvasContext: context,
         viewport,
         transform,
-      }).promise;
+      });
+      try {
+        await renderTask.promise;
+      } catch (error) {
+        if (!cancelled && (error as { name?: string })?.name !== "RenderingCancelledException") {
+          throw error;
+        }
+        return;
+      }
 
       const textLayerContainer = textLayerRef.current;
       if (textLayerContainer) {
@@ -255,6 +264,7 @@ export function PdfDocumentViewer({
     void renderPage();
     return () => {
       cancelled = true;
+      renderTask?.cancel();
     };
   }, [pdf, pageNumber, scale]);
 
