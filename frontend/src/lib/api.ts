@@ -1,30 +1,32 @@
 import axios from "axios";
 
 const api = axios.create({
-  baseURL: process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1",
-  headers: { "Content-Type": "application/json" },
+  baseURL:
+    process.env.NEXT_PUBLIC_API_BASE_URL ??
+    "http://localhost:8000/api/v1",
 });
 
-// Attach Supabase access token from localStorage on every request
 api.interceptors.request.use((config) => {
   if (typeof window !== "undefined") {
     const token = localStorage.getItem("sb-access-token");
     if (token) {
-      config.headers["Authorization"] = `Bearer ${token}`;
+      config.headers.Authorization = `Bearer ${token}`;
     }
   }
   return config;
 });
 
-// Global error handling
 api.interceptors.response.use(
-  (res) => res,
-  (err) => {
-    if (err.response?.status === 401) {
-      // Optionally redirect to /login
+  (response) => response,
+  (error) => {
+    if (
+      typeof window !== "undefined" &&
+      error.response?.status === 401
+    ) {
+      localStorage.removeItem("sb-access-token");
     }
-    return Promise.reject(err);
-  }
+    return Promise.reject(error);
+  },
 );
 
 export default api;
