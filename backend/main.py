@@ -12,6 +12,9 @@ from fastapi.responses import JSONResponse
 
 from app.api.v1.router import api_router
 from app.core.config import get_settings
+from app.core.database import get_supabase_admin
+from app.core.rate_limit import get_rate_limit_redis
+from starlette.concurrency import run_in_threadpool
 
 logger = structlog.get_logger()
 
@@ -79,6 +82,40 @@ def create_app() -> FastAPI:
     @app.get("/health", tags=["health"])
     async def health_check() -> JSONResponse:
         return JSONResponse({"status": "ok", "version": "1.0.0"})
+
+    @app.get("/health/ready", tags=["health"])
+    async def readiness_check() -> JSONResponse:
+        checks: dict[str, str] = {}
+
+        try:
+            await run_in_threadpool(
+                lambda: (
+                    get_supabase_admin()
+                    .table("users")
+                    .select("id")
+                    .limit(1)
+                    .execute()
+                )
+            )
+            checks["supabase"] = "ok"
+        except Exception as exc:
+            checks["supabase"] = f"error:{exc.__class__.__name__}"
+
+        try:
+            pong = await get_rate_limit_redis().ping()
+            checks["redis"] = "ok" if pong else "error:no-pong"
+        except Exception as exc:
+            checks["redis"] = f"error:{exc.__class__.__name__}"
+
+        ready = all(value == "ok" for value in checks.values())
+        return JSONResponse(
+            {
+                "status": "ready" if ready else "not_ready",
+                "version": "1.0.0",
+                "checks": checks,
+            },
+            status_code=200 if ready else 503,
+        )
 
     return app
 
