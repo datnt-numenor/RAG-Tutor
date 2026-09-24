@@ -11,6 +11,7 @@ from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.database import get_supabase_admin
 from app.services.rag_service import get_rag_service
 from app.core.rate_limit import enforce_ai_rate_limit
+from app.services.progress_service import get_progress_service
 
 router = APIRouter()
 
@@ -118,12 +119,21 @@ async def send_message(
     if not session.data:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    db.table("chat_messages").insert({
+    user_msg = db.table("chat_messages").insert({
         "session_id": str(session_id),
         "role": "user",
         "content": body.content,
         "status": "delivered",
-    }).execute()
+    }).execute().data[0]
+
+    await run_in_threadpool(
+        get_progress_service().record_event,
+        user_id=current_user.user_id,
+        project_id=str(project_id),
+        event_type="chat_question",
+        source_id=user_msg["id"],
+        idempotency_key=f"chat_message:{user_msg['id']}",
+    )
 
     rag_service = get_rag_service()
 
