@@ -12,6 +12,7 @@ from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.database import get_supabase_admin
 from app.services.quiz_service import get_quiz_service
 from app.services.ocr_service import get_ocr_service
+from app.core.rate_limit import enforce_ai_rate_limit
 
 router = APIRouter()
 
@@ -29,6 +30,11 @@ class ConfirmScanRequest(BaseModel):
     text: str = Field(..., min_length=1)
 
 
+class StartQuizRequest(BaseModel):
+    count: int = Field(5, ge=1, le=50)
+    question_type: str | None = Field(None, pattern="^(mcq|essay)$")
+
+
 def _assert_member(db, project_id: str, user_id: str) -> None:
     member = (
         db.table("project_members")
@@ -42,6 +48,23 @@ def _assert_member(db, project_id: str, user_id: str) -> None:
         raise HTTPException(status_code=404, detail="Project not found")
 
 
+def _assert_owner(db, project_id: str, user_id: str) -> None:
+    owner = (
+        db.table("project_members")
+        .select("id")
+        .eq("project_id", project_id)
+        .eq("user_id", user_id)
+        .eq("role", "owner")
+        .maybe_single()
+        .execute()
+    )
+    if not owner.data:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the project owner can generate questions",
+        )
+
+
 @router.post(
     "/projects/{project_id}/quiz/generate",
     status_code=status.HTTP_201_CREATED,
@@ -52,7 +75,13 @@ async def generate_quiz(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> dict:
     db = get_supabase_admin()
-    _assert_member(db, str(project_id), current_user.user_id)
+    _assert_owner(db, str(project_id), current_user.user_id)
+    await enforce_ai_rate_limit(
+        current_user.user_id,
+        bucket="quiz-generate",
+        limit=8,
+        window_seconds=300,
+    )
 
     service = get_quiz_service()
     try:
@@ -80,6 +109,54 @@ async def generate_quiz(
 
     return {
         "session": session_res.data[0],
+        "questions": questions,
+    }
+
+
+
+@router.post(
+    "/projects/{project_id}/quiz/start",
+    status_code=status.HTTP_201_CREATED,
+)
+async def start_quiz_from_bank(
+    project_id: UUID,
+    body: StartQuizRequest,
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+) -> dict:
+    db = get_supabase_admin()
+    _assert_member(db, str(project_id), current_user.user_id)
+
+    query = (
+        db.table("questions")
+        .select("*")
+        .eq("project_id", str(project_id))
+        .eq("status", "active")
+        .order("created_at", desc=True)
+        .limit(body.count)
+    )
+    if body.question_type:
+        query = query.eq("question_type", body.question_type)
+
+    questions = query.execute().data
+    if not questions:
+        raise HTTPException(
+            status_code=400,
+            detail="Question bank is empty. Ask the owner to generate questions first.",
+        )
+
+    ids = [question["id"] for question in questions]
+    max_score = sum(float(question.get("max_score") or 0) for question in questions)
+
+    session = db.table("quiz_sessions").insert({
+        "project_id": str(project_id),
+        "user_id": current_user.user_id,
+        "status": "in_progress",
+        "question_ids": ids,
+        "max_score": max_score,
+    }).execute().data[0]
+
+    return {
+        "session": session,
         "questions": questions,
     }
 
@@ -199,6 +276,12 @@ async def answer_question(
         )
         grading_method = "exact-match"
     else:
+        await enforce_ai_rate_limit(
+            current_user.user_id,
+            bucket="essay-grade",
+            limit=20,
+            window_seconds=60,
+        )
         service = get_quiz_service()
         graded = await run_in_threadpool(
             service.grade_essay,
@@ -413,6 +496,13 @@ async def upload_essay_scan(
         {"content-type": mime_type},
     )
 
+    await enforce_ai_rate_limit(
+        current_user.user_id,
+        bucket="ocr",
+        limit=10,
+        window_seconds=300,
+    )
+
     try:
         ocr = await run_in_threadpool(
             get_ocr_service().extract,
@@ -517,6 +607,12 @@ async def confirm_essay_scan(
         raise HTTPException(status_code=404, detail="Question not found")
 
     confirmed_text = body.text.strip()
+    await enforce_ai_rate_limit(
+        current_user.user_id,
+        bucket="essay-grade",
+        limit=20,
+        window_seconds=60,
+    )
     graded = await run_in_threadpool(
         get_quiz_service().grade_essay,
         question.data,
