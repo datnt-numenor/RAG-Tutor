@@ -10,6 +10,7 @@ import {
   FolderKanban,
   LayoutDashboard,
   LogOut,
+  Map,
   MessageSquare,
   Settings,
 } from "lucide-react";
@@ -21,6 +22,7 @@ const items = [
   { href: "/documents", label: "Documents", icon: FileText },
   { href: "/chat", label: "Chat", icon: MessageSquare },
   { href: "/quiz", label: "Quiz", icon: Brain },
+  { href: "/roadmap", label: "Roadmap", icon: Map },
   { href: "/progress", label: "Progress", icon: BarChart3 },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
