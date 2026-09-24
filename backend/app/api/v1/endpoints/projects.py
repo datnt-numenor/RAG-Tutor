@@ -175,16 +175,18 @@ async def remove_member(
     if not owner_check.data:
         raise HTTPException(status_code=403, detail="Only the owner can remove members")
 
-    # Prevent removing owner
+    # Prevent removing owner and return a clean 404 for non-members.
     target = (
         db.table("project_members")
         .select("role")
         .eq("project_id", str(project_id))
         .eq("user_id", str(user_id))
-        .single()
+        .maybe_single()
         .execute()
     )
-    if target.data and target.data["role"] == "owner":
+    if not target.data:
+        raise HTTPException(status_code=404, detail="Project member not found")
+    if target.data["role"] == "owner":
         raise HTTPException(status_code=400, detail="Cannot remove the project owner")
 
     db.table("project_members").delete().eq("project_id", str(project_id)).eq(
