@@ -276,3 +276,32 @@ export async function submitQuiz(projectId: string, sessionId: string) {
   );
   return data;
 }
+
+
+export type ProgressOverview = {
+  projects: number;
+  documents: number;
+  ready_documents: number;
+  chat_sessions: number;
+  chat_messages: number;
+  quiz_sessions: number;
+  quiz_attempts: number;
+  quiz_correct: number;
+  avg_quiz_score: number;
+  reviews_due: number;
+  project_breakdown: Array<{
+    project_id: string;
+    name: string;
+    documents: number;
+    ready_documents: number;
+    chat_sessions: number;
+    quiz_sessions: number;
+    quiz_attempts: number;
+    quiz_correct: number;
+  }>;
+};
+
+export async function getProgressOverview() {
+  const { data } = await api.get<ProgressOverview>("/progress/overview");
+  return data;
+}
