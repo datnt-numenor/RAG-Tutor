@@ -44,6 +44,43 @@ async def create_invitation(
     if not owner.data:
         raise HTTPException(status_code=403, detail="Only the owner can send invitations")
 
+    existing_user = (
+        db.table("users")
+        .select("id")
+        .eq("email", body.email.lower())
+        .maybe_single()
+        .execute()
+    )
+    if existing_user.data:
+        existing_member = (
+            db.table("project_members")
+            .select("id")
+            .eq("project_id", str(project_id))
+            .eq("user_id", existing_user.data["id"])
+            .maybe_single()
+            .execute()
+        )
+        if existing_member.data:
+            raise HTTPException(
+                status_code=409,
+                detail="This user is already a project member",
+            )
+
+    pending = (
+        db.table("project_invitations")
+        .select("id")
+        .eq("project_id", str(project_id))
+        .eq("invited_email", body.email.lower())
+        .eq("status", "pending")
+        .maybe_single()
+        .execute()
+    )
+    if pending.data:
+        raise HTTPException(
+            status_code=409,
+            detail="A pending invitation already exists for this email",
+        )
+
     raw_token = secrets.token_urlsafe(32)
     token_hash = _hash_token(raw_token)
 
