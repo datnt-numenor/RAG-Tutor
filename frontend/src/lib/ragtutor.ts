@@ -678,3 +678,106 @@ export async function rebuildProgress(
   });
   return data;
 }
+
+
+export type ChatStreamEvent =
+  | {
+      type: "meta";
+      payload: {
+        status: string;
+        sources: Citation[];
+        retrieval_params: Record<string, unknown>;
+      };
+    }
+  | { type: "token"; payload: { text: string } }
+  | { type: "done"; payload: { message_id: string } }
+  | { type: "error"; payload: { message: string; error_type?: string } };
+
+export async function streamChatMessage(
+  projectId: string,
+  sessionId: string,
+  content: string,
+  onEvent: (event: ChatStreamEvent) => void,
+): Promise<void> {
+  const baseUrl =
+    process.env.NEXT_PUBLIC_API_BASE_URL ??
+    "http://localhost:8000/api/v1";
+  const token =
+    typeof window !== "undefined"
+      ? localStorage.getItem("sb-access-token")
+      : null;
+
+  const response = await fetch(
+    `${baseUrl}/projects/${projectId}/chat/sessions/${sessionId}/messages/stream`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ content }),
+    },
+  );
+
+  if (!response.ok) {
+    let detail = "Streaming chat request failed";
+    try {
+      const payload = await response.json();
+      detail =
+        typeof payload?.detail === "string"
+          ? payload.detail
+          : JSON.stringify(payload?.detail ?? payload);
+    } catch {
+      // Keep generic message.
+    }
+    throw new Error(detail);
+  }
+
+  if (!response.body) {
+    throw new Error("Streaming response has no body");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  function processBlock(block: string) {
+    let eventName = "";
+    const dataLines: string[] = [];
+
+    for (const line of block.split("\n")) {
+      if (line.startsWith("event:")) {
+        eventName = line.slice("event:".length).trim();
+      } else if (line.startsWith("data:")) {
+        dataLines.push(line.slice("data:".length).trimStart());
+      }
+    }
+
+    if (!eventName || dataLines.length === 0) return;
+
+    const payload = JSON.parse(dataLines.join("\n"));
+    onEvent({
+      type: eventName,
+      payload,
+    } as ChatStreamEvent);
+  }
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+
+    let separator = buffer.indexOf("\n\n");
+    while (separator >= 0) {
+      const block = buffer.slice(0, separator).trim();
+      buffer = buffer.slice(separator + 2);
+      if (block) processBlock(block);
+      separator = buffer.indexOf("\n\n");
+    }
+
+    if (done) break;
+  }
+
+  const finalBlock = buffer.trim();
+  if (finalBlock) processBlock(finalBlock);
+}
