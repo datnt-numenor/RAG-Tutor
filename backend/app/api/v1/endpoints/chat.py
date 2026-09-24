@@ -19,6 +19,20 @@ from app.services.progress_service import get_progress_service
 router = APIRouter()
 
 
+def _assert_member(db, project_id: str, user_id: str) -> None:
+    member = (
+        db.table("project_members")
+        .select("id")
+        .eq("project_id", project_id)
+        .eq("user_id", user_id)
+        .maybe_single()
+        .execute()
+    )
+    if not member.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+
+
 class MessageCreate(BaseModel):
     content: str
 
@@ -36,6 +50,7 @@ async def list_sessions(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> list[dict]:
     db = get_supabase_admin()
+    _assert_member(db, str(project_id), current_user.user_id)
     res = (
         db.table("chat_sessions")
         .select("*")
@@ -53,17 +68,7 @@ async def create_session(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> dict:
     db = get_supabase_admin()
-
-    member = (
-        db.table("project_members")
-        .select("id")
-        .eq("project_id", str(project_id))
-        .eq("user_id", current_user.user_id)
-        .maybe_single()
-        .execute()
-    )
-    if not member.data:
-        raise HTTPException(status_code=404, detail="Project not found")
+    _assert_member(db, str(project_id), current_user.user_id)
 
     res = db.table("chat_sessions").insert({
         "project_id": str(project_id),
@@ -80,6 +85,7 @@ async def list_messages(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> list[dict]:
     db = get_supabase_admin()
+    _assert_member(db, str(project_id), current_user.user_id)
     session = (
         db.table("chat_sessions")
         .select("id")
@@ -110,6 +116,7 @@ async def send_message(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> dict:
     db = get_supabase_admin()
+    _assert_member(db, str(project_id), current_user.user_id)
     await enforce_ai_rate_limit(
         current_user.user_id,
         bucket="chat",
@@ -200,6 +207,7 @@ async def send_message_stream(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ):
     db = get_supabase_admin()
+    _assert_member(db, str(project_id), current_user.user_id)
     await enforce_ai_rate_limit(
         current_user.user_id,
         bucket="chat",
