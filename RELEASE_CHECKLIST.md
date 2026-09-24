@@ -4,10 +4,12 @@ This file tracks release gates that require a real runtime rather than code insp
 
 ## Automated in CI
 
-- [ ] Backend Python sources compile.
-- [ ] Core backend unit tests pass.
-- [ ] Frontend lint passes.
-- [ ] Next.js production build succeeds.
+- [x] Backend Python sources compile.
+- [x] Core backend unit tests pass.
+- [x] Frontend lint passes.
+- [x] Next.js production build succeeds.
+
+CI verified on `main` after release-validation merge (GitHub Actions run #129).
 
 ## Verified against Supabase
 
