@@ -16,6 +16,7 @@ class EmbeddingService:
     def __init__(self, model_name: str | None = None):
         settings = get_settings()
         self.model_name = model_name or settings.embedding_model
+        self.batch_size = max(1, int(settings.embedding_batch_size))
         self.model = _load_model(self.model_name)
         self.max_seq_length = int(getattr(self.model, "max_seq_length", 256) or 256)
 
@@ -31,9 +32,19 @@ class EmbeddingService:
         return len(encoded["input_ids"])
 
     def embed(self, text: str) -> list[float]:
-        return self.model.encode(text).tolist()
+        return self.model.encode(
+            text,
+            show_progress_bar=False,
+        ).tolist()
 
     def embed_many(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        return self.model.encode(texts).tolist()
+
+        embeddings = self.model.encode(
+            texts,
+            batch_size=self.batch_size,
+            show_progress_bar=False,
+            convert_to_numpy=True,
+        )
+        return embeddings.tolist()
