@@ -31,7 +31,12 @@ jobs:
 
       - name: Run core unit tests
         run: |
-          pytest -q             tests/test_chunking_service.py             tests/test_rag_service.py
+          pytest -q \
+            tests/test_chunking_service.py \
+            tests/test_rag_service.py \
+            tests/test_annotation_models.py \
+            tests/test_evaluation_helpers.py \
+            tests/test_topic_roadmap_order.py
 
   frontend:
     runs-on: ubuntu-latest
