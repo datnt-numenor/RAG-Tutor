@@ -9,6 +9,7 @@ from docx import Document as DocxDocument
 from app.core.database import get_supabase_admin
 from app.services.chunking_service import ChunkingService
 from app.services.embedding_service import EmbeddingService
+from app.services.document_summary_service import get_document_summary_service
 
 
 class IngestService:
@@ -149,7 +150,7 @@ class IngestService:
                 {
                     "stage": "chunk",
                     "progress_current": 1,
-                    "progress_total": 4,
+                    "progress_total": 5,
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 }
             ).eq("id", job_id).execute()
@@ -168,7 +169,7 @@ class IngestService:
                 {
                     "stage": "embed",
                     "progress_current": 2,
-                    "progress_total": 4,
+                    "progress_total": 5,
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 }
             ).eq("id", job_id).execute()
@@ -178,6 +179,40 @@ class IngestService:
                 "document_version_id", version_id
             ).execute()
             self._insert_in_batches(rows)
+
+            self.supabase.table("document_jobs").update(
+                {
+                    "stage": "summary",
+                    "progress_current": 3,
+                    "progress_total": 5,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            ).eq("id", job_id).execute()
+
+            summary = None
+            summary_status = "ready"
+            try:
+                summary = get_document_summary_service().summarize(
+                    filename=version["original_filename"],
+                    chunks=rows,
+                )
+            except Exception as summary_exc:
+                summary_status = "error"
+                self.supabase.table("document_versions").update(
+                    {
+                        "summary_status": "error",
+                        "summary": None,
+                    }
+                ).eq("id", version_id).execute()
+
+            self.supabase.table("document_jobs").update(
+                {
+                    "stage": "activate",
+                    "progress_current": 5,
+                    "progress_total": 5,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            ).eq("id", job_id).execute()
 
             document_res = (
                 self.supabase.table("documents")
@@ -202,6 +237,8 @@ class IngestService:
                     "embedding_model": self.embedding_service.model_name,
                     "chunker_version": self.chunking_service.VERSION,
                     "processed_at": processed_at,
+                    "summary": summary,
+                    "summary_status": summary_status,
                 }
             ).eq("id", version_id).execute()
 
@@ -218,7 +255,7 @@ class IngestService:
                     "status": "succeeded",
                     "stage": "done",
                     "progress_current": 4,
-                    "progress_total": 4,
+                    "progress_total": 5,
                     "updated_at": processed_at,
                 }
             ).eq("id", job_id).execute()
