@@ -10,14 +10,14 @@ from app.services.rag_service import get_rag_service
 
 
 def load_jsonl(path: Path) -> list[dict]:
-    rows = []
+    rows: list[dict] = []
     with path.open("r", encoding="utf-8") as handle:
-        for line_number, line in enumerate(handle, start=1):
-            value = line.strip()
-            if not value:
+        for line_number, raw in enumerate(handle, start=1):
+            line = raw.strip()
+            if not line:
                 continue
             try:
-                rows.append(json.loads(value))
+                rows.append(json.loads(line))
             except json.JSONDecodeError as exc:
                 raise ValueError(
                     f"Invalid JSONL at line {line_number}: {exc}"
@@ -25,145 +25,196 @@ def load_jsonl(path: Path) -> list[dict]:
     return rows
 
 
-def contains_expected_source(
-    items: list[dict],
+def normalize(value: str | None) -> str:
+    return (value or "").strip().casefold()
+
+
+def source_matches(
+    source: dict,
     expected_document: str | None,
     expected_page: int | None,
 ) -> bool:
-    if not expected_document and expected_page is None:
-        return True
+    expected_doc = normalize(expected_document)
+    filename = normalize(source.get("source_file"))
+    page = source.get("page_number", source.get("page"))
 
-    for item in items:
-        filename = item.get("source_file") or ""
-        page = item.get("page_number", item.get("page"))
-        document_ok = (
-            True
-            if not expected_document
-            else expected_document.casefold() in filename.casefold()
+    document_ok = True if not expected_doc else expected_doc in filename
+    page_ok = True if expected_page is None else page == expected_page
+    return document_ok and page_ok
+
+
+def keyword_coverage(answer: str, keywords: list[str]) -> float | None:
+    clean = [normalize(keyword) for keyword in keywords if normalize(keyword)]
+    if not clean:
+        return None
+    normalized_answer = normalize(answer)
+    hits = sum(keyword in normalized_answer for keyword in clean)
+    return hits / len(clean)
+
+
+def evaluate_case(service, project_id: str, case: dict) -> dict:
+    question = str(case["question"])
+    top_k = int(case.get("top_k", 5))
+    threshold = float(case.get("threshold", 0.30))
+    should_abstain = bool(case.get("should_abstain", False))
+    expected_document = case.get("expected_document")
+    expected_page = case.get("expected_page")
+    keywords = case.get("answer_keywords") or []
+
+    total_started = time.perf_counter()
+
+    retrieval_started = time.perf_counter()
+    retrieved = service.retrieve(
+        project_id=project_id,
+        query=question,
+        top_k=top_k,
+        threshold=threshold,
+    )
+    retrieval_ms = (time.perf_counter() - retrieval_started) * 1000
+
+    sources = service.build_sources(retrieved)
+
+    if retrieved:
+        generation_started = time.perf_counter()
+        context = service.build_context(retrieved)
+        answer_text = service.generate_answer(
+            question=question,
+            context=context,
         )
-        page_ok = True if expected_page is None else page == expected_page
-        if document_ok and page_ok:
-            return True
-    return False
+        generation_ms = (time.perf_counter() - generation_started) * 1000
+        status = "ok"
+    else:
+        answer_text = "Không đủ thông tin trong tài liệu để trả lời câu hỏi này."
+        generation_ms = 0.0
+        status = "insufficient_evidence"
+
+    total_ms = (time.perf_counter() - total_started) * 1000
+
+    has_expected_target = bool(expected_document) or expected_page is not None
+    retrieval_hit = (
+        any(
+            source_matches(item, expected_document, expected_page)
+            for item in retrieved
+        )
+        if has_expected_target
+        else None
+    )
+    citation_hit = (
+        any(
+            source_matches(item, expected_document, expected_page)
+            for item in sources
+        )
+        if has_expected_target
+        else None
+    )
+
+    abstained = status == "insufficient_evidence"
+    abstain_correct = abstained == should_abstain
+
+    return {
+        "question": question,
+        "status": status,
+        "answer": answer_text,
+        "sources": sources,
+        "retrieved_count": len(retrieved),
+        "retrieval_hit": retrieval_hit,
+        "citation_hit": citation_hit,
+        "abstain_correct": abstain_correct,
+        "keyword_coverage": keyword_coverage(answer_text, keywords),
+        "retrieval_latency_ms": round(retrieval_ms, 2),
+        "generation_latency_ms": round(generation_ms, 2),
+        "end_to_end_latency_ms": round(total_ms, 2),
+    }
 
 
-def keyword_coverage(answer: str, keywords: list[str]) -> float:
-    if not keywords:
-        return 1.0
-    normalized = answer.casefold()
-    hits = sum(1 for keyword in keywords if keyword.casefold() in normalized)
-    return hits / len(keywords)
+def mean_boolean(values: list[bool | None]) -> float | None:
+    filtered = [value for value in values if value is not None]
+    if not filtered:
+        return None
+    return sum(1 for value in filtered if value) / len(filtered)
+
+
+def mean_number(values: list[float | None]) -> float | None:
+    filtered = [value for value in values if value is not None]
+    if not filtered:
+        return None
+    return sum(filtered) / len(filtered)
 
 
 def evaluate(project_id: str, dataset: list[dict]) -> dict:
-    service = get_rag_service()
-    details = []
-
-    for item in dataset:
-        question = item["question"]
-        should_abstain = bool(item.get("should_abstain", False))
-        expected_document = item.get("expected_document")
-        expected_page = item.get("expected_page")
-        expected_keywords = item.get("answer_keywords") or []
-
-        start = time.perf_counter()
-        retrieved = service.retrieve(
-            project_id=project_id,
-            query=question,
-            top_k=int(item.get("top_k", 5)),
-            threshold=float(item.get("threshold", 0.30)),
-        )
-        retrieval_ms = (time.perf_counter() - start) * 1000
-
-        start = time.perf_counter()
-        answer = service.answer(
-            project_id=project_id,
-            question=question,
-            top_k=int(item.get("top_k", 5)),
-            threshold=float(item.get("threshold", 0.30)),
-        )
-        total_ms = (time.perf_counter() - start) * 1000
-
-        retrieval_hit = contains_expected_source(
-            retrieved,
-            expected_document,
-            expected_page,
-        )
-        citation_hit = contains_expected_source(
-            answer.get("sources") or [],
-            expected_document,
-            expected_page,
-        )
-
-        abstained = answer["status"] == "insufficient_evidence"
-        abstain_correct = abstained == should_abstain
-        coverage = keyword_coverage(
-            answer.get("answer") or "",
-            expected_keywords,
-        )
-
-        details.append({
-            "question": question,
-            "retrieval_hit": retrieval_hit,
-            "citation_hit": citation_hit,
-            "abstain_correct": abstain_correct,
-            "keyword_coverage": round(coverage, 4),
-            "retrieved_count": len(retrieved),
-            "status": answer["status"],
-            "retrieval_ms": round(retrieval_ms, 2),
-            "total_ms": round(total_ms, 2),
-        })
-
-    count = len(details)
-    if count == 0:
+    if not dataset:
         raise ValueError("Evaluation dataset is empty")
 
+    service = get_rag_service()
+    details = [
+        evaluate_case(service, project_id, case)
+        for case in dataset
+    ]
+
+    retrieval_latencies = [
+        row["retrieval_latency_ms"] for row in details
+    ]
+    generation_latencies = [
+        row["generation_latency_ms"] for row in details
+        if row["generation_latency_ms"] > 0
+    ]
+    e2e_latencies = [
+        row["end_to_end_latency_ms"] for row in details
+    ]
+
+    summary = {
+        "count": len(details),
+        "retrieval_hit_rate": mean_boolean(
+            [row["retrieval_hit"] for row in details]
+        ),
+        "citation_hit_rate": mean_boolean(
+            [row["citation_hit"] for row in details]
+        ),
+        "abstain_accuracy": mean_boolean(
+            [row["abstain_correct"] for row in details]
+        ),
+        "mean_keyword_coverage": mean_number(
+            [row["keyword_coverage"] for row in details]
+        ),
+        "median_retrieval_latency_ms": round(
+            statistics.median(retrieval_latencies), 2
+        ),
+        "median_generation_latency_ms": (
+            round(statistics.median(generation_latencies), 2)
+            if generation_latencies
+            else 0.0
+        ),
+        "median_end_to_end_latency_ms": round(
+            statistics.median(e2e_latencies), 2
+        ),
+    }
+
     return {
-        "count": count,
-        "retrieval_hit_rate": round(
-            sum(row["retrieval_hit"] for row in details) / count,
-            4,
-        ),
-        "citation_hit_rate": round(
-            sum(row["citation_hit"] for row in details) / count,
-            4,
-        ),
-        "abstain_accuracy": round(
-            sum(row["abstain_correct"] for row in details) / count,
-            4,
-        ),
-        "mean_keyword_coverage": round(
-            statistics.mean(row["keyword_coverage"] for row in details),
-            4,
-        ),
-        "median_retrieval_ms": round(
-            statistics.median(row["retrieval_ms"] for row in details),
-            2,
-        ),
-        "median_total_ms": round(
-            statistics.median(row["total_ms"] for row in details),
-            2,
-        ),
+        "summary": summary,
         "details": details,
     }
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Evaluate RAGTutor retrieval, citation and abstention quality."
+    )
     parser.add_argument("--project-id", required=True)
-    parser.add_argument("--dataset", required=True)
-    parser.add_argument("--output", default="")
+    parser.add_argument("--dataset", required=True, type=Path)
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
 
     result = evaluate(
         project_id=args.project_id,
-        dataset=load_jsonl(Path(args.dataset)),
+        dataset=load_jsonl(args.dataset),
     )
+
     output = json.dumps(result, ensure_ascii=False, indent=2)
     print(output)
 
     if args.output:
-        Path(args.output).write_text(output, encoding="utf-8")
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(output, encoding="utf-8")
 
 
 if __name__ == "__main__":
