@@ -150,6 +150,15 @@ def verify_document_ready(
     return detail
 
 
+def cleanup_project(client: httpx.Client, project_id: str) -> None:
+    response = client.delete(f"/projects/{project_id}")
+    if response.status_code not in {204, 404}:
+        raise RuntimeError(
+            f"cleanup project returned {response.status_code}: "
+            f"{response.text[:500]}"
+        )
+
+
 def run_chat(client: httpx.Client, project_id: str) -> dict:
     session = expect(
         client.post(f"/projects/{project_id}/chat/sessions"),
@@ -230,44 +239,48 @@ def main() -> None:
         project_id = project["id"]
         print(f"[project] created {project_id}")
 
-        with tempfile.TemporaryDirectory(prefix="ragtutor-e2e-") as temp_dir:
-            path = Path(temp_dir) / "transformer_attention_smoke.docx"
-            make_docx(path)
+        try:
+            with tempfile.TemporaryDirectory(prefix="ragtutor-e2e-") as temp_dir:
+                path = Path(temp_dir) / "transformer_attention_smoke.docx"
+                make_docx(path)
 
-            upload = upload_document(client, project_id, path)
-            document_id = upload["document_id"]
-            job_id = upload["job_id"]
-            print(f"[upload] document={document_id} job={job_id}")
+                upload = upload_document(client, project_id, path)
+                document_id = upload["document_id"]
+                job_id = upload["job_id"]
+                print(f"[upload] document={document_id} job={job_id}")
 
-            wait_for_job(client, job_id, args.timeout)
-            detail = verify_document_ready(
-                client,
-                project_id,
-                document_id,
-            )
+                wait_for_job(client, job_id, args.timeout)
+                detail = verify_document_ready(
+                    client,
+                    project_id,
+                    document_id,
+                )
+                print(
+                    "[document] ready active_version="
+                    + str(detail["active_version_id"])
+                )
+
+                answer = run_chat(client, project_id)
+                print(
+                    "[rag] citation_count="
+                    + str(len(answer.get("citations") or []))
+                )
+
             print(
-                "[document] ready active_version="
-                + str(detail["active_version_id"])
+                json.dumps(
+                    {
+                        "status": "PASS",
+                        "project_id": project_id,
+                        "document_id": document_id,
+                        "job_id": job_id,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
             )
-
-            answer = run_chat(client, project_id)
-            print(
-                "[rag] citation_count="
-                + str(len(answer.get("citations") or []))
-            )
-
-        print(
-            json.dumps(
-                {
-                    "status": "PASS",
-                    "project_id": project_id,
-                    "document_id": document_id,
-                    "job_id": job_id,
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-        )
+        finally:
+            cleanup_project(client, project_id)
+            print(f"[cleanup] deleted temporary project {project_id}")
 
 
 if __name__ == "__main__":
