@@ -360,3 +360,109 @@ export async function acceptInvitation(rawToken: string) {
 export async function rejectInvitation(rawToken: string) {
   await api.post(\`/invitations/\${rawToken}/reject\`);
 }
+
+
+export type DocumentVersionDetail = {
+  id: string;
+  version_number: number;
+  original_filename: string;
+  mime_type: string;
+  file_size: number;
+  page_count: number | null;
+  status: string;
+  created_at: string;
+  processed_at: string | null;
+};
+
+export type DocumentDetail = DocumentRecord & {
+  versions: DocumentVersionDetail[];
+};
+
+export type AnnotationRectangle = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export type AnnotationRecord = {
+  id: string;
+  user_id: string;
+  project_id: string;
+  document_id: string;
+  document_version_id: string;
+  page_number: number;
+  annotation_type: "text_highlight" | "rectangle";
+  selected_text: string | null;
+  rectangles: AnnotationRectangle[] | null;
+  content: string | null;
+  color: string;
+  version: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function getDocumentDetail(
+  projectId: string,
+  documentId: string,
+) {
+  const { data } = await api.get<DocumentDetail>(
+    \`/projects/\${projectId}/documents/\${documentId}\`,
+  );
+  return data;
+}
+
+export async function getDocumentVersionSignedUrl(versionId: string) {
+  const { data } = await api.get<{ signed_url: string }>(
+    \`/document-versions/\${versionId}/signed-url\`,
+  );
+  return data.signed_url;
+}
+
+export async function listAnnotations(
+  projectId: string,
+  documentId: string,
+  versionId: string,
+  page?: number,
+) {
+  const { data } = await api.get<AnnotationRecord[]>(
+    \`/projects/\${projectId}/documents/\${documentId}/versions/\${versionId}/annotations\`,
+    { params: page ? { page } : undefined },
+  );
+  return data;
+}
+
+export async function createAnnotation(
+  projectId: string,
+  documentId: string,
+  versionId: string,
+  payload: {
+    page_number: number;
+    annotation_type: "text_highlight" | "rectangle";
+    selected_text?: string | null;
+    rectangles: AnnotationRectangle[];
+    content?: string | null;
+    color: string;
+  },
+) {
+  const { data } = await api.post<AnnotationRecord>(
+    \`/projects/\${projectId}/documents/\${documentId}/versions/\${versionId}/annotations\`,
+    payload,
+  );
+  return data;
+}
+
+export async function updateAnnotation(
+  annotationId: string,
+  payload: Partial<Pick<AnnotationRecord, "content" | "color" | "rectangles" | "selected_text">>,
+) {
+  const { data } = await api.patch<AnnotationRecord>(
+    \`/annotations/\${annotationId}\`,
+    payload,
+  );
+  return data;
+}
+
+export async function deleteAnnotation(annotationId: string) {
+  await api.delete(\`/annotations/\${annotationId}\`);
+}
