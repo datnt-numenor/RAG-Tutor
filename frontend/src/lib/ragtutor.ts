@@ -96,6 +96,10 @@ export async function getProject(projectId: string) {
   return data;
 }
 
+export async function deleteProject(projectId: string) {
+  await api.delete(`/projects/${projectId}`);
+}
+
 export async function listDocuments(projectId: string) {
   const { data } = await api.get<DocumentRecord[]>(
     `/projects/${projectId}/documents`,
