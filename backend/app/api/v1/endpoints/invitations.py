@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+from datetime import datetime, timezone
 from typing import Annotated
 from uuid import UUID
 
@@ -19,6 +20,10 @@ INVITATION_TTL_DAYS = 7
 
 def _hash_token(raw_token: str) -> str:
     return hashlib.sha256(raw_token.encode()).hexdigest()
+
+
+def _parse_expiry(value: str) -> datetime:
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
 
 
 class InviteRequest(BaseModel):
@@ -161,6 +166,13 @@ async def preview_invitation(raw_token: str) -> dict:
     )
     if not res.data or res.data["status"] != "pending":
         raise HTTPException(status_code=404, detail="Invitation not found or expired")
+
+    if _parse_expiry(res.data["expires_at"]) <= datetime.now(timezone.utc):
+        db.table("project_invitations").update({
+            "status": "expired",
+        }).eq("id", res.data["id"]).eq("status", "pending").execute()
+        raise HTTPException(status_code=404, detail="Invitation not found or expired")
+
     return {
         "invitation_id": res.data["id"],
         "project_name": res.data["projects"]["name"],
@@ -204,11 +216,36 @@ async def accept_invitation(
 
 
 @router.post("/invitations/{raw_token}/reject", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
-async def reject_invitation(raw_token: str) -> Response:
+async def reject_invitation(
+    raw_token: str,
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+) -> Response:
     db = get_supabase_admin()
     token_hash = _hash_token(raw_token)
+    invitation = (
+        db.table("project_invitations")
+        .select("id, invited_email, status, expires_at")
+        .eq("token_hash", token_hash)
+        .maybe_single()
+        .execute()
+    )
+    if not invitation.data or invitation.data["status"] != "pending":
+        raise HTTPException(status_code=404, detail="Invitation not found or expired")
+
+    if _parse_expiry(invitation.data["expires_at"]) <= datetime.now(timezone.utc):
+        db.table("project_invitations").update({
+            "status": "expired",
+        }).eq("id", invitation.data["id"]).eq("status", "pending").execute()
+        raise HTTPException(status_code=404, detail="Invitation not found or expired")
+
+    if invitation.data["invited_email"].casefold() != current_user.email.casefold():
+        raise HTTPException(
+            status_code=403,
+            detail="This invitation belongs to a different email",
+        )
+
     db.table("project_invitations").update({"status": "rejected"}).eq(
-        "token_hash", token_hash
+        "id", invitation.data["id"]
     ).eq("status", "pending").execute()
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
