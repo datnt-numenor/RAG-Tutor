@@ -26,7 +26,12 @@ export default function LoginPage() {
     }
 
     localStorage.setItem("sb-access-token", data.session.access_token);
-    router.push("/dashboard");
+    const inviteToken = localStorage.getItem("ragtutor-invite-token");
+    if (inviteToken) {
+      router.push("/invite/" + inviteToken);
+    } else {
+      router.push("/dashboard");
+    }
     router.refresh();
   }
 
