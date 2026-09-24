@@ -271,6 +271,46 @@ async def list_documents(
     return res.data
 
 
+
+@router.get("/projects/{project_id}/documents/{document_id}")
+async def get_document_detail(
+    project_id: UUID,
+    document_id: UUID,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    db = get_supabase_admin()
+    _assert_member(db, str(project_id), current_user.user_id)
+
+    document = (
+        db.table("documents")
+        .select("*")
+        .eq("id", str(document_id))
+        .eq("project_id", str(project_id))
+        .neq("status", "deleting")
+        .maybe_single()
+        .execute()
+    )
+    if not document.data:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    versions = (
+        db.table("document_versions")
+        .select(
+            "id, version_number, original_filename, mime_type, file_size, "
+            "page_count, status, created_at, processed_at"
+        )
+        .eq("document_id", str(document_id))
+        .eq("project_id", str(project_id))
+        .order("version_number", desc=True)
+        .execute()
+    )
+
+    return {
+        **document.data,
+        "versions": versions.data,
+    }
+
+
 @router.delete("/projects/{project_id}/documents/{document_id}", status_code=status.HTTP_202_ACCEPTED)
 async def delete_document(
     project_id: UUID,
