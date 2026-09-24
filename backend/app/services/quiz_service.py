@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 import json
-import math
 import re
+from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from functools import lru_cache
 
 from google import genai
+from google.genai import types
 
 from app.core.config import get_settings
 from app.core.database import get_supabase_admin
-from app.services.embedding_service import EmbeddingService
 from app.services.chunk_sampling_service import balanced_active_chunks
 
 
@@ -20,8 +20,13 @@ class QuizService:
     def __init__(self, supabase, gemini_api_key: str, gemini_model: str):
         self.supabase = supabase
         self.gemini_model = gemini_model
-        self.client = genai.Client(api_key=gemini_api_key)
-        self.embedding_service = EmbeddingService()
+        self.client = genai.Client(
+            api_key=gemini_api_key,
+            http_options=types.HttpOptions(
+                timeout=35_000,
+                retry_options=types.HttpRetryOptions(attempts=1),
+            ),
+        )
 
     def _active_chunks(self, project_id: str, limit: int = 12) -> list[dict]:
         return balanced_active_chunks(
@@ -37,18 +42,27 @@ class QuizService:
         return json.loads(clean)
 
     @staticmethod
-    def _cosine_similarity(a: list[float], b: list[float]) -> float:
-        if not a or not b or len(a) != len(b):
-            return 0.0
+    def _normalize_question(text: str) -> str:
+        return " ".join(
+            re.findall(r"\w+", text.casefold(), flags=re.UNICODE)
+        )
 
-        dot = sum(x * y for x, y in zip(a, b))
-        norm_a = math.sqrt(sum(x * x for x in a))
-        norm_b = math.sqrt(sum(y * y for y in b))
-        if norm_a == 0 or norm_b == 0:
-            return 0.0
-        return dot / (norm_a * norm_b)
+    @classmethod
+    def _is_duplicate_text(cls, a: str, b: str) -> bool:
+        a_norm = cls._normalize_question(a)
+        b_norm = cls._normalize_question(b)
+        if not a_norm or not b_norm:
+            return False
 
-    def _existing_question_embeddings(self, project_id: str) -> list[list[float]]:
+        sequence_ratio = SequenceMatcher(None, a_norm, b_norm).ratio()
+        a_tokens = set(a_norm.split())
+        b_tokens = set(b_norm.split())
+        union = a_tokens | b_tokens
+        jaccard = len(a_tokens & b_tokens) / len(union) if union else 0.0
+
+        return sequence_ratio >= 0.88 or jaccard >= 0.82
+
+    def _existing_question_texts(self, project_id: str) -> list[str]:
         existing = (
             self.supabase.table("questions")
             .select("question_text")
@@ -59,12 +73,11 @@ class QuizService:
             .execute()
         ).data
 
-        texts = [
+        return [
             str(row.get("question_text") or "").strip()
             for row in existing
             if str(row.get("question_text") or "").strip()
         ]
-        return self.embedding_service.embed_many(texts) if texts else []
 
     def _topic_lookup(self, project_id: str) -> tuple[dict[str, str], list[str]]:
         topics = (
@@ -88,7 +101,7 @@ class QuizService:
         count: int = 5,
         question_type: str = "mcq",
     ) -> list[dict]:
-        chunks = self._active_chunks(project_id, limit=max(10, count * 4))
+        chunks = self._active_chunks(project_id, limit=min(12, max(8, count * 2)))
         if not chunks:
             raise ValueError("No ready active chunks found for this project")
 
@@ -97,14 +110,19 @@ class QuizService:
             filename = (chunk.get("document_versions") or {}).get(
                 "original_filename", "unknown"
             )
+            content = str(chunk.get("content") or "").strip()
+            if len(content) > 1200:
+                content = content[:1200]
             context_parts.append(
                 f"[Chunk {i} | {filename} | page {chunk.get('page_number')}]\n"
-                f"{chunk['content']}"
+                f"{content}"
             )
 
         context = "\n\n".join(context_parts)
+        if len(context) > 14_000:
+            context = context[:14_000]
         topic_lookup, topic_names = self._topic_lookup(project_id)
-        candidate_count = min(30, max(count + 2, count * 2))
+        candidate_count = min(12, max(count + 2, count * 2))
 
         common_fields = """
 Every item MUST include:
@@ -207,18 +225,15 @@ CONTEXT:
         if not candidates:
             raise ValueError("No generated question had valid source chunks")
 
-        candidate_embeddings = self.embedding_service.embed_many(
-            [candidate["question_text"] for candidate in candidates]
-        )
-        existing_embeddings = self._existing_question_embeddings(project_id)
-        accepted_embeddings = list(existing_embeddings)
+        existing_questions = self._existing_question_texts(project_id)
+        accepted_questions = list(existing_questions)
 
         inserted: list[dict] = []
-        for candidate, embedding in zip(candidates, candidate_embeddings):
+        for candidate in candidates:
+            question_text = candidate["question_text"]
             is_duplicate = any(
-                self._cosine_similarity(embedding, previous)
-                >= self.DEDUP_THRESHOLD
-                for previous in accepted_embeddings
+                self._is_duplicate_text(question_text, previous)
+                for previous in accepted_questions
             )
             if is_duplicate:
                 continue
@@ -241,7 +256,7 @@ CONTEXT:
                     "max_score",
                     1 if question_type == "mcq" else 10,
                 ),
-                "question_embedding": embedding,
+                "question_embedding": None,
                 "status": "active",
                 "model_name": self.gemini_model,
                 "prompt_version": "quiz-generate-v2",
@@ -259,7 +274,7 @@ CONTEXT:
             self.supabase.table("question_sources").insert(source_rows).execute()
 
             inserted.append(question)
-            accepted_embeddings.append(embedding)
+            accepted_questions.append(question_text)
 
             if len(inserted) >= count:
                 break
