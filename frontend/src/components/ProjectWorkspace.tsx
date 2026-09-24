@@ -11,6 +11,7 @@ import {
   Paperclip,
   RefreshCcw,
   Send,
+  Trash2,
   Upload,
 } from "lucide-react";
 import {
@@ -23,11 +24,14 @@ import {
   retryJob,
   sendMessage,
   uploadDocument,
+  uploadDocumentVersion,
+  deleteDocument,
 } from "@/lib/ragtutor";
 
 export function ProjectWorkspace({ projectId }: { projectId: string }) {
   const queryClient = useQueryClient();
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [versionFiles, setVersionFiles] = useState<Record<string, File | null>>({});
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
 
@@ -114,6 +118,29 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
     },
   });
 
+
+  const versionUpload = useMutation({
+    mutationFn: async ({ documentId, file }: { documentId: string; file: File }) =>
+      uploadDocumentVersion(projectId, documentId, file),
+    onSuccess: async (_data, vars) => {
+      setVersionFiles((current) => ({ ...current, [vars.documentId]: null }));
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["documents", projectId] }),
+        queryClient.invalidateQueries({ queryKey: ["document-jobs", projectId] }),
+      ]);
+    },
+  });
+
+  const removeDocument = useMutation({
+    mutationFn: (documentId: string) => deleteDocument(projectId, documentId),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["documents", projectId] }),
+        queryClient.invalidateQueries({ queryKey: ["document-jobs", projectId] }),
+      ]);
+    },
+  });
+
   const latestJobs = useMemo(() => jobs.data?.slice(0, 8) ?? [], [jobs.data]);
 
   function submitMessage(e: FormEvent) {
@@ -191,16 +218,50 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
                       {doc.active_version_id ? "Ready for RAG" : "Waiting for active version"}
                     </div>
                   </div>
-                  <span
-                    className={
-                      "rounded-full px-3 py-1 text-xs font-medium " +
-                      (doc.active_version_id
-                        ? "bg-[#dce6d8] text-[#56704f]"
-                        : "bg-[#f5e3c3] text-[#8b662e]")
-                    }
-                  >
-                    {doc.active_version_id ? "Ready" : "Processing"}
-                  </span>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <span
+                      className={
+                        "rounded-full px-3 py-1 text-xs font-medium " +
+                        (doc.active_version_id
+                          ? "bg-[#dce6d8] text-[#56704f]"
+                          : "bg-[#f5e3c3] text-[#8b662e]")
+                      }
+                    >
+                      {doc.active_version_id ? "Ready" : "Processing"}
+                    </span>
+
+                    <label
+                      title="Upload new version"
+                      className="grid h-9 w-9 cursor-pointer place-items-center rounded-xl border border-[#b9634c]/15 bg-white/70 text-[#9b4d3b] transition hover:bg-white"
+                    >
+                      <Upload size={15} />
+                      <input
+                        type="file"
+                        accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          setVersionFiles((current) => ({ ...current, [doc.id]: file }));
+                          versionUpload.mutate({ documentId: doc.id, file });
+                          e.target.value = "";
+                        }}
+                      />
+                    </label>
+
+                    <button
+                      title="Delete document"
+                      onClick={() => {
+                        if (window.confirm(`Xóa vĩnh viễn "${doc.display_name}" và toàn bộ versions/chunks?`)) {
+                          removeDocument.mutate(doc.id);
+                        }
+                      }}
+                      disabled={removeDocument.isPending}
+                      className="grid h-9 w-9 place-items-center rounded-xl border border-red-200 bg-white/70 text-red-600 transition hover:bg-red-50 disabled:opacity-50"
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  </div>
                 </div>
               ))}
               {!documents.isLoading && !documents.data?.length && (
