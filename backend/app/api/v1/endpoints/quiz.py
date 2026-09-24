@@ -355,8 +355,8 @@ async def upload_essay_scan(
     project_id: UUID,
     session_id: UUID,
     question_id: UUID,
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
     file: UploadFile = File(...),
-    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)] = None,
 ) -> dict:
     db = get_supabase_admin()
     project_id_str = str(project_id)
