@@ -10,7 +10,6 @@ from fastapi.responses import JSONResponse
 
 from app.api.v1.router import api_router
 from app.core.config import get_settings
-from app.core.database import connect_db, disconnect_db
 
 logger = structlog.get_logger()
 
@@ -19,9 +18,7 @@ logger = structlog.get_logger()
 async def lifespan(app: FastAPI):
     settings = get_settings()
     logger.info("Starting RAGTutor API", env=settings.app_env)
-    await connect_db()
     yield
-    await disconnect_db()
     logger.info("Shutting down RAGTutor API")
 
 
