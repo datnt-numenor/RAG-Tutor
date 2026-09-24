@@ -164,3 +164,29 @@ export async function sendMessage(
   );
   return data;
 }
+
+
+export async function uploadDocumentVersion(
+  projectId: string,
+  documentId: string,
+  file: File,
+) {
+  const form = new FormData();
+  form.append("file", file);
+  const { data } = await api.post<{
+    document_id: string;
+    version_id: string;
+    version_number: number;
+    job_id: string;
+  }>(`/projects/${projectId}/documents/${documentId}/versions`, form, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
+}
+
+export async function deleteDocument(projectId: string, documentId: string) {
+  const { data } = await api.delete<{ job_id: string; message: string }>(
+    `/projects/${projectId}/documents/${documentId}`,
+  );
+  return data;
+}
