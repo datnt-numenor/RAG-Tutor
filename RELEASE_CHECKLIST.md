@@ -11,7 +11,7 @@ This file tracks release gates that require a real runtime rather than code insp
 - [x] Frontend dependency audit has no high/critical vulnerability.
 - [x] Backend CI/Render dependency set uses CPU-only PyTorch instead of CUDA runtimes.
 
-CI verified on `main` after release-validation merge (GitHub Actions run #129).
+CI verified on `main` through GitHub Actions run #158 and subsequent release-hardening pushes.
 
 ## Verified against Supabase
 
@@ -28,8 +28,8 @@ CI verified on `main` after release-validation merge (GitHub Actions run #129).
 
 Requires real Redis, Celery, Gemini and app environment variables.
 
-- [ ] Run `backend/scripts/smoke_e2e.py`.
-- [ ] Run `backend/scripts/security_e2e.py` with two independent users.
+- [ ] Run `backend/scripts/smoke_e2e.py` — Runtime E2E workflow is ready; currently blocked only by missing `SUPABASE_SERVICE_KEY` and `GEMINI_API_KEY` GitHub Actions secrets.
+- [ ] Run `backend/scripts/security_e2e.py` with two independent users — workflow now creates/deletes disposable Supabase Auth users automatically.
 - [ ] Verify PDF upload, ingest, citation deep-link and permanent deletion.
 - [ ] Verify OCR image upload → confirmation → essay grading.
 - [ ] Verify roadmap/schedule generation.
@@ -37,9 +37,10 @@ Requires real Redis, Celery, Gemini and app environment variables.
 
 ## Deployment
 
-- [ ] Deploy API from `render.yaml`.
-- [ ] Choose worker hosting: current Render Background Worker is paid (`starter`); keep it for reliable Celery or select another worker host, then attach production Redis.
-- [ ] Deploy Next.js frontend to Vercel.
+- [ ] Deploy API on Railway from `datnt-numenor/RAG-Tutor` once private runtime secrets are configured.
+- [x] Provision production Redis on Railway (`RAGTutor` project).
+- [ ] Railway API and Celery services are preconfigured (root `/backend`, Dockerfile, start commands, healthcheck); attach GitHub source after private secrets are set.
+- [ ] Deploy Next.js frontend to Vercel after the production API URL is available.
 - [ ] Configure production CORS and public frontend environment variables.
 - [ ] Run post-deploy smoke tests.
 - [ ] Record cold-start and RAG latency measurements.
