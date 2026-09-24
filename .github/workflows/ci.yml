@@ -33,6 +33,7 @@ jobs:
         run: |
           pytest -q \
             tests/test_chunking_service.py \
+            tests/test_chunk_sampling_service.py \
             tests/test_rag_service.py \
             tests/test_annotation_models.py \
             tests/test_evaluation_helpers.py \
