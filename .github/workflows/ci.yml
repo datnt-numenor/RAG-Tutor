@@ -27,7 +27,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Compile Python sources
-        run: python -m compileall -q app main.py evaluation
+        run: python -m compileall -q app main.py evaluation scripts
 
       - name: Run core unit tests
         run: |
