@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   BookOpen,
   CheckCircle2,
@@ -10,16 +10,62 @@ import {
   RotateCcw,
   Trophy,
 } from "lucide-react";
-import { getProgressOverview } from "@/lib/ragtutor";
+import {
+  getProgressHistory,
+  getProgressOverview,
+  rebuildProgress,
+} from "@/lib/ragtutor";
 
 export default function ProgressPage() {
+  const queryClient = useQueryClient();
+
   const progress = useQuery({
     queryKey: ["progress-overview"],
     queryFn: getProgressOverview,
     refetchInterval: 15000,
   });
 
+  const history = useQuery({
+    queryKey: ["progress-history", 30],
+    queryFn: () => getProgressHistory(30),
+  });
+
+  const rebuild = useMutation({
+    mutationFn: (projectId: string) => rebuildProgress(projectId, 30),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["progress-history"] }),
+        queryClient.invalidateQueries({ queryKey: ["progress-overview"] }),
+      ]);
+    },
+  });
+
   const data = progress.data;
+
+  const daily = new Map<
+    string,
+    { studyMinutes: number; attempts: number; correct: number }
+  >();
+  for (const row of history.data ?? []) {
+    const current = daily.get(row.snapshot_date) ?? {
+      studyMinutes: 0,
+      attempts: 0,
+      correct: 0,
+    };
+    current.studyMinutes += row.study_minutes;
+    current.attempts += row.questions_attempted;
+    current.correct += row.questions_correct;
+    daily.set(row.snapshot_date, current);
+  }
+
+  const chartRows = Array.from(daily.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .slice(-14);
+
+  const maxActivity = Math.max(
+    1,
+    ...chartRows.map(([, row]) => row.studyMinutes + row.attempts * 10),
+  );
 
   return (
     <div className="mx-auto max-w-6xl space-y-6">
@@ -46,6 +92,57 @@ export default function ProgressPage() {
       )}
 
       <section className="paper-card rounded-[26px] p-5 md:p-6">
+        <div className="mb-5 flex items-end justify-between gap-4">
+          <div>
+            <h2 className="font-display text-2xl font-semibold">
+              14-day study activity
+            </h2>
+            <p className="mt-1 text-sm text-[#8a7b70]">
+              Snapshot theo timezone tài khoản; chiều cao kết hợp study minutes và quiz attempts.
+            </p>
+          </div>
+          <div className="text-xs text-[#8a7b70]">last 30 days loaded</div>
+        </div>
+
+        {history.isLoading ? (
+          <div className="h-44 animate-pulse rounded-2xl bg-white/45" />
+        ) : chartRows.length > 0 ? (
+          <div className="flex h-52 items-end gap-2 overflow-x-auto rounded-2xl bg-white/45 p-4">
+            {chartRows.map(([date, row]) => {
+              const activity = row.studyMinutes + row.attempts * 10;
+              const height = Math.max(5, Math.round((activity / maxActivity) * 100));
+              return (
+                <div
+                  key={date}
+                  className="flex min-w-10 flex-1 flex-col items-center justify-end gap-2"
+                  title={
+                    date +
+                    " · " +
+                    row.studyMinutes +
+                    " study min · " +
+                    row.attempts +
+                    " attempts"
+                  }
+                >
+                  <div
+                    className="w-full max-w-10 rounded-t-xl bg-[#b9634c]/75"
+                    style={{ height: height + "%" }}
+                  />
+                  <div className="text-[10px] text-[#8a7b70]">
+                    {date.slice(5)}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="rounded-2xl border border-dashed border-[#8b6b53]/20 p-7 text-center text-sm text-[#8a7b70]">
+            Chưa có snapshot. Hoàn thành lịch học hoặc làm quiz để tạo dữ liệu.
+          </div>
+        )}
+      </section>
+
+      <section className="paper-card rounded-[26px] p-5 md:p-6">
         <div className="mb-5">
           <h2 className="font-display text-2xl font-semibold">By project</h2>
           <p className="mt-1 text-sm text-[#8a7b70]">
@@ -61,14 +158,18 @@ export default function ProgressPage() {
                 : 0;
 
             return (
-              <Link
-                href={"/projects/" + project.project_id}
+              <div
                 key={project.project_id}
-                className="block rounded-2xl border border-[#755640]/10 bg-white/58 p-4 transition hover:bg-white/80"
+                className="rounded-2xl border border-[#755640]/10 bg-white/58 p-4 transition hover:bg-white/80"
               >
                 <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center">
                   <div>
-                    <div className="font-display text-xl font-semibold">{project.name}</div>
+                    <Link
+                      href={"/projects/" + project.project_id}
+                      className="font-display text-xl font-semibold hover:text-[#9b4d3b]"
+                    >
+                      {project.name}
+                    </Link>
                     <div className="mt-1 text-xs text-[#8a7b70]">
                       {project.ready_documents}/{project.documents} documents ready
                     </div>
@@ -88,6 +189,13 @@ export default function ProgressPage() {
                       <div className="mt-1 text-xs text-[#8a7b70]">Accuracy</div>
                     </div>
                   </div>
+                  <button
+                    onClick={() => rebuild.mutate(project.project_id)}
+                    disabled={rebuild.isPending}
+                    className="rounded-xl border border-[#b9634c]/20 bg-[#fff8f3] px-3 py-2 text-xs font-semibold text-[#9b4d3b] disabled:opacity-50"
+                  >
+                    {rebuild.isPending ? "Rebuilding..." : "Rebuild 30d"}
+                  </button>
                 </div>
 
                 <div className="mt-4 h-2 overflow-hidden rounded-full bg-[#eadfd5]">
@@ -96,7 +204,7 @@ export default function ProgressPage() {
                     style={{ width: accuracy + "%" }}
                   />
                 </div>
-              </Link>
+              </div>
             );
           })}
 
