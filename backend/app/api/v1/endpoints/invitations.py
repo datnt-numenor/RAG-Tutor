@@ -109,7 +109,7 @@ async def revoke_invitation(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.get("/{raw_token}")
+@router.get("/invitations/{raw_token}")
 async def preview_invitation(raw_token: str) -> dict:
     """Return safe preview info (project name, inviter) without revealing token hash."""
     db = get_supabase_admin()
@@ -131,7 +131,7 @@ async def preview_invitation(raw_token: str) -> dict:
     }
 
 
-@router.post("/{raw_token}/accept", status_code=201)
+@router.post("/invitations/{raw_token}/accept", status_code=201)
 async def accept_invitation(
     raw_token: str,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
@@ -147,7 +147,7 @@ async def accept_invitation(
     return {"message": "Joined project successfully"}
 
 
-@router.post("/{raw_token}/reject", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
+@router.post("/invitations/{raw_token}/reject", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
 async def reject_invitation(raw_token: str) -> Response:
     db = get_supabase_admin()
     token_hash = _hash_token(raw_token)
