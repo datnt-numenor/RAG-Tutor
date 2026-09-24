@@ -72,6 +72,17 @@ def create_project(actor: Actor, suffix: str) -> dict:
     )
 
 
+def cleanup_project(actor: Actor, project_id: str | None) -> None:
+    if not project_id:
+        return
+    response = actor.client.delete(f"/projects/{project_id}")
+    if response.status_code not in {204, 404}:
+        print(
+            f"[WARN] cleanup {project_id} returned "
+            f"{response.status_code}: {response.text[:300]}"
+        )
+
+
 def supabase_rest_visible(
     supabase_url: str,
     anon_key: str,
@@ -160,6 +171,9 @@ def main() -> None:
         args.member_email,
         args.member_password,
     )
+
+    owner_project_id: str | None = None
+    member_project_id: str | None = None
 
     try:
         owner_project = create_project(owner, "owner")
@@ -324,6 +338,8 @@ def main() -> None:
             )
         )
     finally:
+        cleanup_project(owner, owner_project_id)
+        cleanup_project(member, member_project_id)
         owner.client.close()
         member.client.close()
 
