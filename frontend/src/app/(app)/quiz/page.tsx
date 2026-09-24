@@ -231,7 +231,7 @@ export default function QuizPage() {
                   style={{
                     width:
                       totalQuestions > 0
-                        ? \`\${Math.round((answeredCount / totalQuestions) * 100)}%\`
+                        ? `${Math.round((answeredCount / totalQuestions) * 100)}%`
                         : "0%",
                   }}
                 />
