@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, EmailStr
 
 from app.core.auth import AuthenticatedUser, get_current_user
@@ -58,13 +58,12 @@ async def sign_in(body: SignInRequest) -> TokenResponse:
     return TokenResponse(access_token=res.session.access_token)  # type: ignore[union-attr]
 
 
-@router.post("/signout", status_code=status.HTTP_204_NO_CONTENT)
+@router.post("/signout", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
 async def sign_out(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
-) -> None:
-    """Invalidate the current session."""
-    client = get_supabase_anon()
-    client.auth.sign_out()
+) -> Response:
+    """End the local API session response without a response body."""
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/me")
