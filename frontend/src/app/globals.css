@@ -1,26 +1,85 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --paper: #f8f2e9;
+  --paper-deep: #efe5d8;
+  --ink: #29231f;
+  --muted: #7d7167;
+  --terracotta: #b9634c;
+  --terracotta-dark: #8f4738;
+  --terracotta-soft: #efd3c7;
+  --sage: #8b9d83;
+  --sage-soft: #dce6d8;
+  --gold: #c88b3b;
+  --gold-soft: #f5e3c3;
+  --line: rgba(92, 70, 55, 0.13);
+  --card: rgba(255, 252, 247, 0.88);
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+* {
+  box-sizing: border-box;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  background: var(--paper);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  margin: 0;
+  background:
+    radial-gradient(circle at 15% 0%, rgba(217, 182, 145, 0.16), transparent 34rem),
+    linear-gradient(rgba(255,255,255,0.35), rgba(255,255,255,0.15)),
+    var(--paper);
+  color: var(--ink);
+  font-family: var(--font-inter), Arial, sans-serif;
+}
+
+::selection {
+  background: var(--terracotta-soft);
+  color: var(--terracotta-dark);
+}
+
+.font-display {
+  font-family: var(--font-lora), Georgia, serif;
+}
+
+.font-hand {
+  font-family: var(--font-caveat), cursive;
+}
+
+.paper-grid {
+  background-image:
+    linear-gradient(to right, rgba(117, 91, 70, 0.035) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(117, 91, 70, 0.035) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+.paper-card {
+  background: var(--card);
+  border: 1px solid rgba(102, 77, 57, 0.11);
+  box-shadow:
+    0 1px 1px rgba(74, 52, 37, 0.04),
+    0 10px 30px rgba(74, 52, 37, 0.055);
+}
+
+.soft-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(185, 99, 76, 0.32) transparent;
+}
+
+.soft-scrollbar::-webkit-scrollbar {
+  width: 8px;
+}
+
+.soft-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(185, 99, 76, 0.28);
+  border-radius: 999px;
+}
+
+button,
+a,
+input,
+textarea,
+select {
+  -webkit-tap-highlight-color: transparent;
 }
