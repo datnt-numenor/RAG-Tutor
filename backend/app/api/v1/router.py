@@ -16,6 +16,7 @@ from app.api.v1.endpoints import (
     schedules,
     progress,
     invitations,
+    search,
 )
 
 api_router = APIRouter()
@@ -34,3 +35,5 @@ api_router.include_router(schedules.router, tags=["schedules"])
 api_router.include_router(progress.router, tags=["progress"])
 
 api_router.include_router(invitations.router, tags=["invitations"])
+
+api_router.include_router(search.router, tags=["search"])
