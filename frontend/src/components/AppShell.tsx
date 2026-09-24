@@ -18,6 +18,7 @@ import {
   X,
 } from "lucide-react";
 import { useAuth } from "@/providers/AuthProvider";
+import { GlobalSearch } from "@/components/GlobalSearch";
 
 const items = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -114,10 +115,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </Link>
 
           <div className="relative mx-auto w-full max-w-3xl">
-            <input
-              className="w-full rounded-2xl border border-[#705541]/12 bg-white/75 px-4 py-3 text-sm outline-none transition placeholder:text-[#9b8c81] focus:border-[#b9634c]/35 focus:ring-4 focus:ring-[#b9634c]/8 md:px-5"
-              placeholder="Search your projects, documents, or ask a question..."
-            />
+            <GlobalSearch />
           </div>
         </header>
 
