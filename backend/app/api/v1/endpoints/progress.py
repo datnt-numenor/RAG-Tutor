@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.database import get_supabase_admin
+from app.services.progress_service import get_progress_service
+from starlette.concurrency import run_in_threadpool
 
 router = APIRouter()
 
@@ -148,4 +150,76 @@ async def progress_overview(
         ),
         "reviews_due": len(reviews.data),
         "project_breakdown": project_breakdown,
+    }
+
+
+
+@router.get("/progress/history")
+async def progress_history(
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    days: int = Query(30, ge=1, le=365),
+    project_id: str | None = None,
+) -> list[dict]:
+    db = get_supabase_admin()
+    start_date = (datetime.now(timezone.utc) - timedelta(days=days - 1)).date()
+
+    query = (
+        db.table("progress_snapshots")
+        .select("*, projects(name)")
+        .eq("user_id", current_user.user_id)
+        .gte("snapshot_date", start_date.isoformat())
+        .order("snapshot_date")
+    )
+
+    if project_id:
+        member = (
+            db.table("project_members")
+            .select("id")
+            .eq("project_id", project_id)
+            .eq("user_id", current_user.user_id)
+            .maybe_single()
+            .execute()
+        )
+        if not member.data:
+            raise HTTPException(status_code=404, detail="Project not found")
+        query = query.eq("project_id", project_id)
+
+    return query.execute().data
+
+
+@router.post("/projects/{project_id}/progress/rebuild")
+async def rebuild_progress(
+    project_id: str,
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    days: int = Query(30, ge=1, le=365),
+) -> dict:
+    db = get_supabase_admin()
+    member = (
+        db.table("project_members")
+        .select("id")
+        .eq("project_id", project_id)
+        .eq("user_id", current_user.user_id)
+        .maybe_single()
+        .execute()
+    )
+    if not member.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    service = get_progress_service()
+    tz = service._user_timezone(current_user.user_id)
+    end_date = datetime.now(tz).date()
+    start_date = end_date - timedelta(days=days - 1)
+
+    rows = await run_in_threadpool(
+        service.rebuild_range,
+        user_id=current_user.user_id,
+        project_id=project_id,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    return {
+        "project_id": project_id,
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "snapshots_rebuilt": len(rows),
     }
