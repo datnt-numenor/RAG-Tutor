@@ -108,12 +108,11 @@ def balanced_active_chunks(
         1,
         math.ceil(limit / len(ready_documents)),
     )
-    sampled_groups: list[list[dict]] = []
 
+    prepared: list[tuple[dict, list[dict]]] = []
     for document in ready_documents:
         active_version_id = document["active_version_id"]
         version = document.get("document_versions") or {}
-
         rows = (
             supabase.table("chunks")
             .select(
@@ -128,9 +127,7 @@ def balanced_active_chunks(
             .execute()
         ).data or []
 
-        chosen = sample_evenly(rows, per_document_target)
-        for row in chosen:
-            # Preserve the relation-like shape consumed by quiz/roadmap code.
+        for row in rows:
             row["document_versions"] = {
                 "id": active_version_id,
                 "original_filename": version.get("original_filename"),
@@ -140,48 +137,24 @@ def balanced_active_chunks(
                 "active_version_id": active_version_id,
                 "status": "active",
             }
-        sampled_groups.append(chosen)
+        prepared.append((document, rows))
 
-    # If some documents contain fewer chunks than their initial quota, fetch a
-    # larger even sample from each and interleave again to fill the requested
-    # context without biasing toward the first document.
+    sampled_groups = [
+        sample_evenly(rows, per_document_target)
+        for _, rows in prepared
+    ]
     first_pass = interleave_groups(sampled_groups, limit)
     if len(first_pass) >= limit:
         return first_pass
 
+    # Some documents may contain fewer chunks than their initial quota.
+    # Re-sample the already fetched rows at a wider target and interleave again.
     refill_target = min(
         max_chunks_per_document,
         max(per_document_target, limit),
     )
-    refill_groups: list[list[dict]] = []
-    for document in ready_documents:
-        active_version_id = document["active_version_id"]
-        version = document.get("document_versions") or {}
-        rows = (
-            supabase.table("chunks")
-            .select(
-                "id, content, page_number, section_title, chunk_index, "
-                "document_id, document_version_id"
-            )
-            .eq("project_id", project_id)
-            .eq("document_id", document["id"])
-            .eq("document_version_id", active_version_id)
-            .order("chunk_index")
-            .limit(max_chunks_per_document)
-            .execute()
-        ).data or []
-
-        chosen = sample_evenly(rows, refill_target)
-        for row in chosen:
-            row["document_versions"] = {
-                "id": active_version_id,
-                "original_filename": version.get("original_filename"),
-                "status": version.get("status"),
-            }
-            row["documents"] = {
-                "active_version_id": active_version_id,
-                "status": "active",
-            }
-        refill_groups.append(chosen)
-
+    refill_groups = [
+        sample_evenly(rows, refill_target)
+        for _, rows in prepared
+    ]
     return interleave_groups(refill_groups, limit)
