@@ -293,6 +293,47 @@ npm run build
 
 GitHub Actions CI is defined in `.github/workflows/ci.yml`.
 
+## End-to-end smoke test
+
+Sau khi Redis, Celery worker và FastAPI đang chạy, có thể kiểm tra toàn bộ vertical slice bằng một lệnh. Script tự tạo một DOCX tạm chứa kiến thức Transformer, upload, chờ ingest và hỏi một câu RAG có citation.
+
+PowerShell:
+
+```powershell
+cd backend
+$env:RAGTUTOR_TEST_EMAIL="your-test-account@example.com"
+$env:RAGTUTOR_TEST_PASSWORD="<local-test-password>"
+python scripts/smoke_e2e.py
+```
+
+Hoặc truyền tham số trực tiếp:
+
+```bash
+python scripts/smoke_e2e.py \
+  --email your-test-account@example.com \
+  --password '<password>' \
+  --base-url http://127.0.0.1:8000/api/v1 \
+  --timeout 180
+```
+
+Flow được kiểm tra:
+
+```text
+sign in
+→ /auth/me
+→ create project
+→ generate temporary DOCX
+→ upload document
+→ Celery ingest polling
+→ active version = ready
+→ create chat session
+→ RAG question
+→ grounded answer contains Query/Key/Value
+→ at least one citation
+```
+
+Không commit test password hoặc access token vào repository.
+
 ## RAG evaluation
 
 Create a fixed JSONL dataset such as:
