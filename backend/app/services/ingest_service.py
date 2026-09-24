@@ -208,7 +208,7 @@ class IngestService:
             self.supabase.table("document_jobs").update(
                 {
                     "stage": "activate",
-                    "progress_current": 5,
+                    "progress_current": 4,
                     "progress_total": 5,
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 }
@@ -254,7 +254,7 @@ class IngestService:
                 {
                     "status": "succeeded",
                     "stage": "done",
-                    "progress_current": 4,
+                    "progress_current": 5,
                     "progress_total": 5,
                     "updated_at": processed_at,
                 }
