@@ -97,6 +97,7 @@ async def upload_document(
 
     # Create ingest job
     job_res = db.table("document_jobs").insert({
+        "project_id": str(project_id),
         "document_id": document_id,
         "document_version_id": version_id,
         "job_type": "ingest",
@@ -121,6 +122,135 @@ async def upload_document(
         ) from exc
 
     return {"document_id": document_id, "version_id": version_id, "job_id": job_id}
+
+
+
+@router.post(
+    "/projects/{project_id}/documents/{document_id}/versions",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def upload_document_version(
+    project_id: UUID,
+    document_id: UUID,
+    file: UploadFile = File(...),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    """Upload a new version for an existing document and ingest it asynchronously."""
+    db = get_supabase_admin()
+    _assert_owner(db, str(project_id), current_user.user_id)
+
+    document = (
+        db.table("documents")
+        .select("id, status")
+        .eq("id", str(document_id))
+        .eq("project_id", str(project_id))
+        .maybe_single()
+        .execute()
+    )
+    if not document.data:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if document.data["status"] == "deleting":
+        raise HTTPException(status_code=409, detail="Document is being deleted")
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="File is empty")
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="File too large (max 50 MB)")
+    if file.content_type not in ALLOWED_MIME:
+        raise HTTPException(status_code=415, detail="Only PDF and DOCX are supported")
+
+    sha256 = hashlib.sha256(content).hexdigest()
+
+    duplicate = (
+        db.table("document_versions")
+        .select("id, version_number")
+        .eq("document_id", str(document_id))
+        .eq("sha256", sha256)
+        .maybe_single()
+        .execute()
+    )
+    if duplicate.data:
+        raise HTTPException(
+            status_code=409,
+            detail=f"This exact file is already version {duplicate.data['version_number']}",
+        )
+
+    latest = (
+        db.table("document_versions")
+        .select("version_number")
+        .eq("document_id", str(document_id))
+        .order("version_number", desc=True)
+        .limit(1)
+        .execute()
+    )
+    version_number = (
+        int(latest.data[0]["version_number"]) + 1 if latest.data else 1
+    )
+
+    filename = file.filename or f"version-{version_number}"
+    storage_path = (
+        f"projects/{project_id}/documents/{document_id}/"
+        f"versions/v{version_number}/{filename}"
+    )
+
+    db.storage.from_("documents").upload(
+        storage_path,
+        content,
+        {"content-type": file.content_type},
+    )
+
+    try:
+        version_res = db.table("document_versions").insert({
+            "document_id": str(document_id),
+            "project_id": str(project_id),
+            "version_number": version_number,
+            "storage_path": storage_path,
+            "original_filename": filename,
+            "mime_type": file.content_type,
+            "file_size": len(content),
+            "sha256": sha256,
+            "status": "pending",
+        }).execute()
+    except Exception:
+        try:
+            db.storage.from_("documents").remove([storage_path])
+        finally:
+            raise
+
+    version_id = version_res.data[0]["id"]
+
+    job_res = db.table("document_jobs").insert({
+        "project_id": str(project_id),
+        "document_id": str(document_id),
+        "document_version_id": version_id,
+        "job_type": "ingest",
+        "status": "queued",
+        "stage": "store",
+        "max_attempts": 3,
+    }).execute()
+    job_id = job_res.data[0]["id"]
+
+    from app.workers.ingest_worker import ingest_document
+
+    try:
+        ingest_document.delay(str(document_id), version_id, job_id)
+    except Exception as exc:
+        db.table("document_jobs").update({
+            "status": "failed",
+            "last_error": f"Failed to dispatch ingest worker: {exc}",
+        }).eq("id", job_id).execute()
+        raise HTTPException(
+            status_code=503,
+            detail="Version uploaded but ingestion worker could not be queued",
+        ) from exc
+
+    return {
+        "document_id": str(document_id),
+        "version_id": version_id,
+        "version_number": version_number,
+        "job_id": job_id,
+    }
 
 
 @router.get("/projects/{project_id}/documents")
@@ -183,6 +313,7 @@ async def delete_document(
 
     # Create delete job
     job_res = db.table("document_jobs").insert({
+        "project_id": str(project_id),
         "document_id": str(document_id),
         "job_type": "delete",
         "status": "queued",
@@ -191,7 +322,22 @@ async def delete_document(
     }).execute()
     job_id = job_res.data[0]["id"]
 
-    # TODO: dispatch Celery task: delete_document.delay(str(document_id), job_id)
+    from app.workers.delete_worker import delete_document as delete_document_task
+
+    try:
+        delete_document_task.delay(str(document_id), job_id)
+    except Exception as exc:
+        db.table("document_jobs").update({
+            "status": "failed",
+            "last_error": f"Failed to dispatch delete worker: {exc}",
+        }).eq("id", job_id).execute()
+        db.table("documents").update({
+            "status": "active",
+        }).eq("id", str(document_id)).execute()
+        raise HTTPException(
+            status_code=503,
+            detail="Document could not be queued for deletion",
+        ) from exc
 
     return {"job_id": job_id, "message": "Deletion queued"}
 
@@ -206,21 +352,10 @@ async def list_project_document_jobs(
     db = get_supabase_admin()
     _assert_member(db, str(project_id), current_user.user_id)
 
-    documents = (
-        db.table("documents")
-        .select("id")
-        .eq("project_id", str(project_id))
-        .execute()
-    )
-    document_ids = [row["id"] for row in documents.data]
-
-    if not document_ids:
-        return []
-
     res = (
         db.table("document_jobs")
         .select("*")
-        .in_("document_id", document_ids)
+        .eq("project_id", str(project_id))
         .order("created_at", desc=True)
         .limit(100)
         .execute()
