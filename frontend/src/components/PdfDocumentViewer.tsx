@@ -26,9 +26,13 @@ type DraftRect = AnnotationRectangle | null;
 export function PdfDocumentViewer({
   projectId,
   documentId,
+  initialVersionId,
+  initialPage = 1,
 }: {
   projectId: string;
   documentId: string;
+  initialVersionId?: string;
+  initialPage?: number;
 }) {
   const queryClient = useQueryClient();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -36,9 +40,13 @@ export function PdfDocumentViewer({
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const dragStart = useRef<{ x: number; y: number } | null>(null);
 
-  const [selectedVersionId, setSelectedVersionId] = useState<string>("");
+  const [selectedVersionId, setSelectedVersionId] = useState<string>(
+    initialVersionId ?? "",
+  );
   const [pdf, setPdf] = useState<PDFDocumentProxy | null>(null);
-  const [pageNumber, setPageNumber] = useState(1);
+  const [pageNumber, setPageNumber] = useState(
+    Math.max(1, initialPage),
+  );
   const [scale, setScale] = useState(1.25);
   const [draftRect, setDraftRect] = useState<DraftRect>(null);
   const [annotationMode, setAnnotationMode] = useState<"rectangle" | "text">(
