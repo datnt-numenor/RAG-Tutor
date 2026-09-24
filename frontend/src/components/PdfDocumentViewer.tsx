@@ -10,7 +10,7 @@ import {
   MessageSquareText,
   Trash2,
 } from "lucide-react";
-import type { PDFDocumentProxy } from "pdfjs-dist";
+import type { PDFDocumentLoadingTask, PDFDocumentProxy } from "pdfjs-dist";
 import {
   createAnnotation,
   deleteAnnotation,
@@ -169,7 +169,7 @@ export function PdfDocumentViewer({
     if (!signedUrl.data) return;
 
     let cancelled = false;
-    let loadedPdf: PDFDocumentProxy | null = null;
+    let loadingTask: PDFDocumentLoadingTask | null = null;
 
     async function load() {
       setLoadingPdf(true);
@@ -180,13 +180,13 @@ export function PdfDocumentViewer({
           import.meta.url,
         ).toString();
 
-        const task = pdfjs.getDocument(signedUrl.data);
-        loadedPdf = await task.promise;
+        loadingTask = pdfjs.getDocument({ url: signedUrl.data });
+        const loadedPdf = await loadingTask.promise;
 
         if (!cancelled) {
           setPdf(loadedPdf);
           setPageNumber((current) =>
-            Math.min(Math.max(1, current), loadedPdf?.numPages ?? 1),
+            Math.min(Math.max(1, current), loadedPdf.numPages),
           );
         }
       } finally {
@@ -198,7 +198,7 @@ export function PdfDocumentViewer({
 
     return () => {
       cancelled = true;
-      if (loadedPdf) void loadedPdf.destroy();
+      if (loadingTask) void loadingTask.destroy();
     };
   }, [signedUrl.data]);
 
