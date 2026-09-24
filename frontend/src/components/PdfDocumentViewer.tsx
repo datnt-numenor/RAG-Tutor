@@ -32,6 +32,7 @@ export function PdfDocumentViewer({
 }) {
   const queryClient = useQueryClient();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const textLayerRef = useRef<HTMLDivElement | null>(null);
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const dragStart = useRef<{ x: number; y: number } | null>(null);
 
@@ -40,6 +41,9 @@ export function PdfDocumentViewer({
   const [pageNumber, setPageNumber] = useState(1);
   const [scale, setScale] = useState(1.25);
   const [draftRect, setDraftRect] = useState<DraftRect>(null);
+  const [annotationMode, setAnnotationMode] = useState<"rectangle" | "text">(
+    "rectangle",
+  );
   const [color, setColor] = useState("#F4D06F");
   const [loadingPdf, setLoadingPdf] = useState(false);
 
@@ -90,13 +94,16 @@ export function PdfDocumentViewer({
 
   const create = useMutation({
     mutationFn: (payload: {
-      rect: AnnotationRectangle;
+      rectangles: AnnotationRectangle[];
       note: string | null;
+      annotationType: "rectangle" | "text_highlight";
+      selectedText?: string | null;
     }) =>
       createAnnotation(projectId, documentId, effectiveVersionId, {
         page_number: pageNumber,
-        annotation_type: "rectangle",
-        rectangles: [payload.rect],
+        annotation_type: payload.annotationType,
+        rectangles: payload.rectangles,
+        selected_text: payload.selectedText ?? null,
         content: payload.note,
         color,
       }),
@@ -227,6 +234,22 @@ export function PdfDocumentViewer({
         viewport,
         transform,
       }).promise;
+
+      const textLayerContainer = textLayerRef.current;
+      if (textLayerContainer) {
+        textLayerContainer.replaceChildren();
+        textLayerContainer.style.setProperty("--scale-factor", String(scale));
+        textLayerContainer.style.width = Math.floor(viewport.width) + "px";
+        textLayerContainer.style.height = Math.floor(viewport.height) + "px";
+
+        const pdfjs = await import("pdfjs-dist");
+        const textLayer = new pdfjs.TextLayer({
+          textContentSource: page.streamTextContent(),
+          container: textLayerContainer,
+          viewport,
+        });
+        await textLayer.render();
+      }
     }
 
     void renderPage();
@@ -292,9 +315,62 @@ export function PdfDocumentViewer({
 
     const note = window.prompt("Ghi chú cho vùng highlight này (có thể để trống):");
     create.mutate({
-      rect,
+      rectangles: [rect],
       note: note?.trim() || null,
+      annotationType: "rectangle",
     });
+  }
+
+  function onTextSelectionEnd() {
+    if (annotationMode !== "text" || create.isPending) return;
+
+    const selection = window.getSelection();
+    const layer = textLayerRef.current;
+    if (!selection || selection.isCollapsed || !layer) return;
+
+    const selectedText = selection.toString().trim();
+    if (!selectedText) return;
+
+    const range = selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+    if (!range) return;
+
+    const layerRect = layer.getBoundingClientRect();
+    if (!layerRect.width || !layerRect.height) return;
+
+    const rectangles: AnnotationRectangle[] = [];
+    for (const clientRect of Array.from(range.getClientRects())) {
+      const left = Math.max(clientRect.left, layerRect.left);
+      const top = Math.max(clientRect.top, layerRect.top);
+      const right = Math.min(clientRect.right, layerRect.right);
+      const bottom = Math.min(clientRect.bottom, layerRect.bottom);
+
+      if (right <= left || bottom <= top) continue;
+
+      const x = (left - layerRect.left) / layerRect.width;
+      const y = (top - layerRect.top) / layerRect.height;
+      const width = (right - left) / layerRect.width;
+      const height = (bottom - top) / layerRect.height;
+
+      rectangles.push({
+        x: Math.min(1, Math.max(0, x)),
+        y: Math.min(1, Math.max(0, y)),
+        width: Math.min(width, 1 - x),
+        height: Math.min(height, 1 - y),
+      });
+    }
+
+    if (!rectangles.length) return;
+
+    const note = window.prompt(
+      "Ghi chú cho đoạn text được highlight (có thể để trống):",
+    );
+    create.mutate({
+      rectangles,
+      note: note?.trim() || null,
+      annotationType: "text_highlight",
+      selectedText,
+    });
+    selection.removeAllRanges();
   }
 
   if (detail.isLoading) {
@@ -341,6 +417,36 @@ export function PdfDocumentViewer({
               ))}
             </select>
           </label>
+
+          <div className="text-xs font-medium text-[#6f6258]">
+            Mode
+            <div className="mt-1 flex rounded-xl border border-[#755640]/15 bg-white/80 p-1">
+              <button
+                type="button"
+                onClick={() => setAnnotationMode("rectangle")}
+                className={
+                  "rounded-lg px-3 py-1.5 text-xs font-semibold " +
+                  (annotationMode === "rectangle"
+                    ? "bg-[#efd3c7] text-[#8f4738]"
+                    : "text-[#7d7167]")
+                }
+              >
+                Rectangle
+              </button>
+              <button
+                type="button"
+                onClick={() => setAnnotationMode("text")}
+                className={
+                  "rounded-lg px-3 py-1.5 text-xs font-semibold " +
+                  (annotationMode === "text"
+                    ? "bg-[#dce6d8] text-[#587052]"
+                    : "text-[#7d7167]")
+                }
+              >
+                Text
+              </button>
+            </div>
+          </div>
 
           <label className="text-xs font-medium text-[#6f6258]">
             Highlight
@@ -411,20 +517,31 @@ export function PdfDocumentViewer({
                   Không lấy được signed URL cho file.
                 </div>
               ) : (
-                <div className="relative mx-auto w-fit shadow-2xl shadow-[#5d493a]/15">
+                <div
+                  className="relative mx-auto w-fit shadow-2xl shadow-[#5d493a]/15"
+                  onMouseUp={onTextSelectionEnd}
+                >
                   <canvas ref={canvasRef} className="block bg-white" />
+
                   <div
-                    ref={overlayRef}
-                    className="absolute inset-0 cursor-crosshair touch-none select-none"
-                    onPointerDown={onPointerDown}
-                    onPointerMove={onPointerMove}
-                    onPointerUp={onPointerUp}
+                    ref={textLayerRef}
+                    className={
+                      "textLayer absolute inset-0 " +
+                      (annotationMode === "text"
+                        ? "cursor-text select-text"
+                        : "pointer-events-none select-none")
+                    }
+                  />
+
+                  <div
+                    className="pointer-events-none absolute inset-0"
+                    aria-hidden="true"
                   >
                     {annotations.data?.flatMap((annotation) =>
                       (annotation.rectangles ?? []).map((rect, index) => (
                         <div
                           key={annotation.id + "-" + index}
-                          className="pointer-events-none absolute border border-black/10"
+                          className="absolute border border-black/10"
                           style={{
                             left: rect.x * 100 + "%",
                             top: rect.y * 100 + "%",
@@ -438,7 +555,7 @@ export function PdfDocumentViewer({
 
                     {draftRect && (
                       <div
-                        className="pointer-events-none absolute border-2 border-[#9b4d3b]"
+                        className="absolute border-2 border-[#9b4d3b]"
                         style={{
                           left: draftRect.x * 100 + "%",
                           top: draftRect.y * 100 + "%",
@@ -449,6 +566,16 @@ export function PdfDocumentViewer({
                       />
                     )}
                   </div>
+
+                  {annotationMode === "rectangle" && (
+                    <div
+                      ref={overlayRef}
+                      className="absolute inset-0 cursor-crosshair touch-none select-none"
+                      onPointerDown={onPointerDown}
+                      onPointerMove={onPointerMove}
+                      onPointerUp={onPointerUp}
+                    />
+                  )}
                 </div>
               )}
             </div>
@@ -462,7 +589,7 @@ export function PdfDocumentViewer({
               <div>
                 <h2 className="font-display text-xl font-semibold">Page notes</h2>
                 <p className="text-xs text-[#8a7b70]">
-                  Drag trực tiếp trên PDF để highlight.
+                  Rectangle: kéo vùng. Text: bôi đen trực tiếp chữ trên PDF.
                 </p>
               </div>
             </div>
@@ -482,6 +609,11 @@ export function PdfDocumentViewer({
                       <div className="text-xs font-semibold uppercase tracking-wide text-[#8a7b70]">
                         {annotation.annotation_type}
                       </div>
+                      {annotation.selected_text && (
+                        <blockquote className="mt-2 line-clamp-4 border-l-2 border-[#b9634c]/30 pl-2 text-xs leading-5 text-[#6f6258]">
+                          {annotation.selected_text}
+                        </blockquote>
+                      )}
                       <button
                         onClick={() => {
                           const next = window.prompt(
