@@ -15,7 +15,7 @@ const lora = Lora({
 });
 
 const caveat = Caveat({
-  subsets: ["latin", "vietnamese"],
+  subsets: ["latin", "latin-ext"],
   variable: "--font-caveat",
 });
 

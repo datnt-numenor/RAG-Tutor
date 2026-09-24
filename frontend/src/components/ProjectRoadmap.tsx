@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CalendarDays,
@@ -44,16 +44,16 @@ export function ProjectRoadmap({ projectId }: { projectId: string }) {
     queryFn: () => listSchedules(projectId),
   });
 
-  const [targetScore, setTargetScore] = useState("80");
-  const [examDate, setExamDate] = useState("");
-  const [weeklyMinutes, setWeeklyMinutes] = useState("300");
+  const [targetScoreOverride, setTargetScoreOverride] = useState<string | null>(null);
+  const [examDateOverride, setExamDateOverride] = useState<string | null>(null);
+  const [weeklyMinutesOverride, setWeeklyMinutesOverride] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!project.data) return;
-    setTargetScore(String(project.data.target_score ?? 80));
-    setExamDate(project.data.exam_date ?? "");
-    setWeeklyMinutes(String(project.data.weekly_study_minutes ?? 300));
-  }, [project.data]);
+  const targetScore =
+    targetScoreOverride ?? String(project.data?.target_score ?? 80);
+  const examDate = examDateOverride ?? project.data?.exam_date ?? "";
+  const weeklyMinutes =
+    weeklyMinutesOverride ??
+    String(project.data?.weekly_study_minutes ?? 300);
 
   const saveGoals = useMutation({
     mutationFn: () =>
@@ -70,6 +70,9 @@ export function ProjectRoadmap({ projectId }: { projectId: string }) {
         queryClient.invalidateQueries({ queryKey: ["roadmap", projectId] }),
         queryClient.invalidateQueries({ queryKey: ["projects"] }),
       ]);
+      setTargetScoreOverride(null);
+      setExamDateOverride(null);
+      setWeeklyMinutesOverride(null);
     },
   });
 
@@ -154,7 +157,7 @@ export function ProjectRoadmap({ projectId }: { projectId: string }) {
               min={0}
               max={100}
               value={targetScore}
-              onChange={(event) => setTargetScore(event.target.value)}
+              onChange={(event) => setTargetScoreOverride(event.target.value)}
               className="w-full rounded-2xl border border-[#705541]/15 bg-white/80 px-4 py-3 outline-none"
             />
           </label>
@@ -167,7 +170,7 @@ export function ProjectRoadmap({ projectId }: { projectId: string }) {
             <input
               type="date"
               value={examDate}
-              onChange={(event) => setExamDate(event.target.value)}
+              onChange={(event) => setExamDateOverride(event.target.value)}
               className="w-full rounded-2xl border border-[#705541]/15 bg-white/80 px-4 py-3 outline-none"
             />
           </label>
@@ -181,7 +184,7 @@ export function ProjectRoadmap({ projectId }: { projectId: string }) {
               type="number"
               min={30}
               value={weeklyMinutes}
-              onChange={(event) => setWeeklyMinutes(event.target.value)}
+              onChange={(event) => setWeeklyMinutesOverride(event.target.value)}
               className="w-full rounded-2xl border border-[#705541]/15 bg-white/80 px-4 py-3 outline-none"
             />
           </label>
