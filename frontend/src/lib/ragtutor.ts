@@ -305,3 +305,58 @@ export async function getProgressOverview() {
   const { data } = await api.get<ProgressOverview>("/progress/overview");
   return data;
 }
+
+
+export type ProjectInvitation = {
+  id: string;
+  invited_email: string;
+  status: string;
+  expires_at: string;
+  created_at: string;
+};
+
+export async function createProjectInvitation(projectId: string, email: string) {
+  const { data } = await api.post<{
+    invitation_id: string;
+    invite_link: string;
+    expires_at: string;
+  }>(\`/projects/\${projectId}/invitations\`, { email });
+  return data;
+}
+
+export async function listProjectInvitations(projectId: string) {
+  const { data } = await api.get<ProjectInvitation[]>(
+    \`/projects/\${projectId}/invitations\`,
+  );
+  return data;
+}
+
+export async function revokeProjectInvitation(
+  projectId: string,
+  invitationId: string,
+) {
+  await api.delete(
+    \`/projects/\${projectId}/invitations/\${invitationId}\`,
+  );
+}
+
+export async function previewInvitation(rawToken: string) {
+  const { data } = await api.get<{
+    invitation_id: string;
+    project_name: string;
+    invited_by: string | null;
+    expires_at: string;
+  }>(\`/invitations/\${rawToken}\`);
+  return data;
+}
+
+export async function acceptInvitation(rawToken: string) {
+  const { data } = await api.post<{ message: string }>(
+    \`/invitations/\${rawToken}/accept\`,
+  );
+  return data;
+}
+
+export async function rejectInvitation(rawToken: string) {
+  await api.post(\`/invitations/\${rawToken}/reject\`);
+}
