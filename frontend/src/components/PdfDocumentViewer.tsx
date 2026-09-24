@@ -166,10 +166,7 @@ export function PdfDocumentViewer({
   });
 
   useEffect(() => {
-    if (!signedUrl.data) {
-      setPdf(null);
-      return;
-    }
+    if (!signedUrl.data) return;
 
     let cancelled = false;
     let loadedPdf: PDFDocumentProxy | null = null;
