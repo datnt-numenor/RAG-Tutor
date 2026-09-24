@@ -124,7 +124,7 @@ async def reject_schedule(
     db = get_supabase_admin()
     schedule = (
         db.table("schedules")
-        .select("id, project_id, topic_id, start_time, end_time")
+        .select("id, project_id")
         .eq("id", str(schedule_id))
         .maybe_single()
         .execute()
@@ -153,7 +153,7 @@ async def complete_schedule(
     db = get_supabase_admin()
     schedule = (
         db.table("schedules")
-        .select("id, project_id")
+        .select("id, project_id, topic_id, start_time, end_time")
         .eq("id", str(schedule_id))
         .maybe_single()
         .execute()
