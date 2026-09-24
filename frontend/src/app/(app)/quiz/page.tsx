@@ -5,15 +5,19 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CheckCircle2,
   CircleHelp,
+  ExternalLink,
   ImageUp,
   Loader2,
   Sparkles,
+  Trash2,
   XCircle,
 } from "lucide-react";
 import {
   answerQuizQuestion,
   confirmEssayScan,
+  deleteEssayScan,
   generateQuiz,
+  getEssayScanSignedUrl,
   getQuizSession,
   listProjects,
   listQuizSessions,
@@ -549,6 +553,9 @@ function QuestionCard({
               {attempt.feedback && (
                 <p className="mt-2 leading-6">{attempt.feedback}</p>
               )}
+              {attempt.submission_type === "image_scan" && (
+                <ScanImageActions attempt={attempt} />
+              )}
             </div>
           ) : (
             <button
@@ -561,5 +568,64 @@ function QuestionCard({
         </div>
       </div>
     </form>
+  );
+}
+
+
+function ScanImageActions({ attempt }: { attempt: QuizAttempt }) {
+  const queryClient = useQueryClient();
+
+  const scanUrl = useQuery({
+    queryKey: ["quiz-scan-url", attempt.id, attempt.image_storage_path],
+    queryFn: () => getEssayScanSignedUrl(attempt.id),
+    enabled: Boolean(attempt.image_storage_path),
+    staleTime: 4 * 60 * 1000,
+  });
+
+  const remove = useMutation({
+    mutationFn: () => deleteEssayScan(attempt.id),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["quiz-session"] });
+      await queryClient.invalidateQueries({
+        queryKey: ["quiz-scan-url", attempt.id],
+      });
+    },
+  });
+
+  if (!attempt.image_storage_path) {
+    return (
+      <div className="mt-3 text-xs text-[#7d7167]">
+        Ảnh scan đã được xóa; confirmed OCR text và kết quả chấm vẫn được giữ.
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-3 flex flex-wrap gap-2 border-t border-current/10 pt-3">
+      {scanUrl.data && (
+        <a
+          href={scanUrl.data}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-1.5 rounded-xl bg-white/60 px-3 py-2 text-xs font-semibold"
+        >
+          <ExternalLink size={14} />
+          Xem ảnh scan
+        </a>
+      )}
+      <button
+        type="button"
+        onClick={() => {
+          if (window.confirm("Xóa ảnh scan? OCR text và kết quả chấm vẫn được giữ.")) {
+            remove.mutate();
+          }
+        }}
+        disabled={remove.isPending}
+        className="inline-flex items-center gap-1.5 rounded-xl bg-red-50 px-3 py-2 text-xs font-semibold text-red-700 disabled:opacity-50"
+      >
+        <Trash2 size={14} />
+        {remove.isPending ? "Đang xóa..." : "Xóa ảnh"}
+      </button>
+    </div>
   );
 }
