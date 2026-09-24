@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useMemo, useState } from "react";
+import { CollaborationPanel } from "@/components/CollaborationPanel";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
@@ -333,6 +334,8 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
               )}
             </div>
           </div>
+
+          <CollaborationPanel projectId={projectId} />
         </div>
 
         <div className="paper-card flex min-h-[760px] flex-col rounded-[26px] p-5 md:p-6">
