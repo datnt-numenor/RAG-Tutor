@@ -63,6 +63,7 @@ model Project {
   invitations        ProjectInvitation[]
   documents          Document[]
   document_versions  DocumentVersion[]
+  document_jobs      DocumentJob[]
   chunks             Chunk[]
   topics             Topic[]
   questions          Question[]
@@ -168,6 +169,7 @@ model DocumentVersion {
 
 model DocumentJob {
   id                  String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  project_id          String    @db.Uuid
   document_id         String    @db.Uuid  // No FK — survives document deletion
   document_version_id String?   @db.Uuid
   job_type            String    // ingest|delete
@@ -181,8 +183,10 @@ model DocumentJob {
   created_at          DateTime  @default(now()) @db.Timestamptz(6)
   updated_at          DateTime  @updatedAt @db.Timestamptz(6)
 
+  project          Project          @relation(fields: [project_id], references: [id], onDelete: Cascade)
   document_version DocumentVersion? @relation(fields: [document_version_id], references: [id], onDelete: SetNull)
 
+  @@index([project_id])
   @@map("document_jobs")
 }
 
