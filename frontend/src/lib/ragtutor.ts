@@ -285,6 +285,36 @@ export async function submitQuiz(projectId: string, sessionId: string) {
 }
 
 
+export type DueReviewState = {
+  id: string;
+  question_id: string;
+  due_at: string;
+  interval_days: number;
+  repetitions: number;
+  ease_factor: number;
+  last_score: number | null;
+  last_reviewed_at: string | null;
+  questions: QuizQuestion;
+};
+
+export async function listDueReviews(projectId: string, limit = 20) {
+  const { data } = await api.get<DueReviewState[]>(
+    `/projects/${projectId}/reviews/due`,
+    { params: { limit } },
+  );
+  return data;
+}
+
+export async function startDueReview(projectId: string, count = 10) {
+  const { data } = await api.post<{
+    session: QuizSession;
+    questions: QuizQuestion[];
+    review_states: Omit<DueReviewState, "questions">[];
+  }>(`/projects/${projectId}/reviews/start`, { count });
+  return data;
+}
+
+
 export type ProgressOverview = {
   projects: number;
   documents: number;
