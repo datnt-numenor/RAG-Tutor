@@ -13,6 +13,23 @@ import {
   Trash2,
   XCircle,
 } from "lucide-react";
+function getApiErrorMessage(error: unknown, fallback: string): string {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "response" in error
+  ) {
+    const response = (error as {
+      response?: { data?: { detail?: unknown } };
+    }).response;
+    const detail = response?.data?.detail;
+    if (typeof detail === "string" && detail.trim()) {
+      return detail;
+    }
+  }
+  return fallback;
+}
+
 import {
   answerQuizQuestion,
   confirmEssayScan,
@@ -299,7 +316,10 @@ export default function QuizPage() {
 
         {generate.isError && (
           <div className="mt-4 rounded-xl bg-red-50 p-3 text-sm text-red-700">
-            Không sinh được question bank. Chỉ owner được generate và project cần document đã ingest xong.
+            {getApiErrorMessage(
+              generate.error,
+              "Không sinh được question bank. Vui lòng thử lại.",
+            )}
           </div>
         )}
         {startBank.isError && (
