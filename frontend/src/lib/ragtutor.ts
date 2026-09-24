@@ -243,13 +243,13 @@ export async function generateQuiz(
   const { data } = await api.post<{
     session: QuizSession;
     questions: QuizQuestion[];
-  }>(\`/projects/\${projectId}/quiz/generate\`, payload);
+  }>(`/projects/${projectId}/quiz/generate`, payload);
   return data;
 }
 
 export async function listQuizSessions(projectId: string) {
   const { data } = await api.get<QuizSession[]>(
-    \`/projects/\${projectId}/quiz/sessions\`,
+    `/projects/${projectId}/quiz/sessions`,
   );
   return data;
 }
@@ -259,7 +259,7 @@ export async function getQuizSession(projectId: string, sessionId: string) {
     session: QuizSession;
     questions: QuizQuestion[];
     attempts: QuizAttempt[];
-  }>(\`/projects/\${projectId}/quiz/sessions/\${sessionId}\`);
+  }>(`/projects/${projectId}/quiz/sessions/${sessionId}`);
   return data;
 }
 
@@ -270,7 +270,7 @@ export async function answerQuizQuestion(
   answer: string,
 ) {
   const { data } = await api.post<QuizAttempt>(
-    \`/projects/\${projectId}/quiz/sessions/\${sessionId}/questions/\${questionId}/answer\`,
+    `/projects/${projectId}/quiz/sessions/${sessionId}/questions/${questionId}/answer`,
     { answer },
   );
   return data;
@@ -278,7 +278,7 @@ export async function answerQuizQuestion(
 
 export async function submitQuiz(projectId: string, sessionId: string) {
   const { data } = await api.post<QuizSession>(
-    \`/projects/\${projectId}/quiz/sessions/\${sessionId}/submit\`,
+    `/projects/${projectId}/quiz/sessions/${sessionId}/submit`,
   );
   return data;
 }
@@ -326,13 +326,13 @@ export async function createProjectInvitation(projectId: string, email: string) 
     invitation_id: string;
     invite_link: string;
     expires_at: string;
-  }>(\`/projects/\${projectId}/invitations\`, { email });
+  }>(`/projects/${projectId}/invitations`, { email });
   return data;
 }
 
 export async function listProjectInvitations(projectId: string) {
   const { data } = await api.get<ProjectInvitation[]>(
-    \`/projects/\${projectId}/invitations\`,
+    `/projects/${projectId}/invitations`,
   );
   return data;
 }
@@ -342,7 +342,7 @@ export async function revokeProjectInvitation(
   invitationId: string,
 ) {
   await api.delete(
-    \`/projects/\${projectId}/invitations/\${invitationId}\`,
+    `/projects/${projectId}/invitations/${invitationId}`,
   );
 }
 
@@ -352,19 +352,19 @@ export async function previewInvitation(rawToken: string) {
     project_name: string;
     invited_by: string | null;
     expires_at: string;
-  }>(\`/invitations/\${rawToken}\`);
+  }>(`/invitations/${rawToken}`);
   return data;
 }
 
 export async function acceptInvitation(rawToken: string) {
   const { data } = await api.post<{ message: string }>(
-    \`/invitations/\${rawToken}/accept\`,
+    `/invitations/${rawToken}/accept`,
   );
   return data;
 }
 
 export async function rejectInvitation(rawToken: string) {
-  await api.post(\`/invitations/\${rawToken}/reject\`);
+  await api.post(`/invitations/${rawToken}/reject`);
 }
 
 
@@ -413,14 +413,14 @@ export async function getDocumentDetail(
   documentId: string,
 ) {
   const { data } = await api.get<DocumentDetail>(
-    \`/projects/\${projectId}/documents/\${documentId}\`,
+    `/projects/${projectId}/documents/${documentId}`,
   );
   return data;
 }
 
 export async function getDocumentVersionSignedUrl(versionId: string) {
   const { data } = await api.get<{ signed_url: string }>(
-    \`/document-versions/\${versionId}/signed-url\`,
+    `/document-versions/${versionId}/signed-url`,
   );
   return data.signed_url;
 }
@@ -432,7 +432,7 @@ export async function listAnnotations(
   page?: number,
 ) {
   const { data } = await api.get<AnnotationRecord[]>(
-    \`/projects/\${projectId}/documents/\${documentId}/versions/\${versionId}/annotations\`,
+    `/projects/${projectId}/documents/${documentId}/versions/${versionId}/annotations`,
     { params: page ? { page } : undefined },
   );
   return data;
@@ -452,7 +452,7 @@ export async function createAnnotation(
   },
 ) {
   const { data } = await api.post<AnnotationRecord>(
-    \`/projects/\${projectId}/documents/\${documentId}/versions/\${versionId}/annotations\`,
+    `/projects/${projectId}/documents/${documentId}/versions/${versionId}/annotations`,
     payload,
   );
   return data;
@@ -463,14 +463,14 @@ export async function updateAnnotation(
   payload: Partial<Pick<AnnotationRecord, "content" | "color" | "rectangles" | "selected_text">>,
 ) {
   const { data } = await api.patch<AnnotationRecord>(
-    \`/annotations/\${annotationId}\`,
+    `/annotations/${annotationId}`,
     payload,
   );
   return data;
 }
 
 export async function deleteAnnotation(annotationId: string) {
-  await api.delete(\`/annotations/\${annotationId}\`);
+  await api.delete(`/annotations/${annotationId}`);
 }
 
 
@@ -527,13 +527,13 @@ export async function updateProject(
     weekly_study_minutes?: number | null;
   },
 ) {
-  const { data } = await api.patch<Project>(\`/projects/\${projectId}\`, payload);
+  const { data } = await api.patch<Project>(`/projects/${projectId}`, payload);
   return data;
 }
 
 export async function getRoadmap(projectId: string) {
   const { data } = await api.get<RoadmapData>(
-    \`/projects/\${projectId}/roadmap\`,
+    `/projects/${projectId}/roadmap`,
   );
   return data;
 }
@@ -542,47 +542,47 @@ export async function generateRoadmap(projectId: string) {
   const { data } = await api.post<{
     project_id: string;
     topics: RoadmapTopic[];
-  }>(\`/projects/\${projectId}/roadmap/generate\`);
+  }>(`/projects/${projectId}/roadmap/generate`);
   return data;
 }
 
 export async function listSchedules(projectId: string) {
   const { data } = await api.get<StudySchedule[]>(
-    \`/projects/\${projectId}/schedules\`,
+    `/projects/${projectId}/schedules`,
   );
   return data;
 }
 
 export async function generateSchedules(projectId: string) {
   const { data } = await api.post<StudySchedule[]>(
-    \`/projects/\${projectId}/schedules/generate\`,
+    `/projects/${projectId}/schedules/generate`,
   );
   return data;
 }
 
 export async function acceptSchedule(scheduleId: string) {
   const { data } = await api.post<StudySchedule>(
-    \`/schedules/\${scheduleId}/accept\`,
+    `/schedules/${scheduleId}/accept`,
   );
   return data;
 }
 
 export async function rejectSchedule(scheduleId: string) {
   const { data } = await api.post<StudySchedule>(
-    \`/schedules/\${scheduleId}/reject\`,
+    `/schedules/${scheduleId}/reject`,
   );
   return data;
 }
 
 export async function completeSchedule(scheduleId: string) {
   const { data } = await api.post(
-    \`/schedules/\${scheduleId}/complete\`,
+    `/schedules/${scheduleId}/complete`,
   );
   return data;
 }
 
 export async function uncompleteSchedule(scheduleId: string) {
-  await api.delete(\`/schedules/\${scheduleId}/complete\`);
+  await api.delete(`/schedules/${scheduleId}/complete`);
 }
 
 
@@ -595,7 +595,7 @@ export async function uploadEssayScan(
   const form = new FormData();
   form.append("file", file);
   const { data } = await api.post<QuizAttempt>(
-    \`/projects/\${projectId}/quiz/sessions/\${sessionId}/questions/\${questionId}/scan\`,
+    `/projects/${projectId}/quiz/sessions/${sessionId}/questions/${questionId}/scan`,
     form,
     { headers: { "Content-Type": "multipart/form-data" } },
   );
@@ -607,7 +607,7 @@ export async function confirmEssayScan(
   text: string,
 ) {
   const { data } = await api.post<QuizAttempt>(
-    \`/quiz-attempts/\${attemptId}/confirm-scan\`,
+    `/quiz-attempts/${attemptId}/confirm-scan`,
     { text },
   );
   return data;
@@ -615,11 +615,11 @@ export async function confirmEssayScan(
 
 export async function getEssayScanSignedUrl(attemptId: string) {
   const { data } = await api.get<{ signed_url: string }>(
-    \`/quiz-attempts/\${attemptId}/scan-url\`,
+    `/quiz-attempts/${attemptId}/scan-url`,
   );
   return data.signed_url;
 }
 
 export async function deleteEssayScan(attemptId: string) {
-  await api.delete(\`/quiz-attempts/\${attemptId}/scan\`);
+  await api.delete(`/quiz-attempts/${attemptId}/scan`);
 }
