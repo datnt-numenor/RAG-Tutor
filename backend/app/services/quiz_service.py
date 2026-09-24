@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -9,13 +10,17 @@ from google import genai
 
 from app.core.config import get_settings
 from app.core.database import get_supabase_admin
+from app.services.embedding_service import EmbeddingService
 
 
 class QuizService:
+    DEDUP_THRESHOLD = 0.90
+
     def __init__(self, supabase, gemini_api_key: str, gemini_model: str):
         self.supabase = supabase
         self.gemini_model = gemini_model
         self.client = genai.Client(api_key=gemini_api_key)
+        self.embedding_service = EmbeddingService()
 
     def _active_chunks(self, project_id: str, limit: int = 12) -> list[dict]:
         response = (
@@ -46,18 +51,63 @@ class QuizService:
         clean = re.sub(r"\s*\x60\x60\x60\s*$", "", clean)
         return json.loads(clean)
 
+    @staticmethod
+    def _cosine_similarity(a: list[float], b: list[float]) -> float:
+        if not a or not b or len(a) != len(b):
+            return 0.0
+
+        dot = sum(x * y for x, y in zip(a, b))
+        norm_a = math.sqrt(sum(x * x for x in a))
+        norm_b = math.sqrt(sum(y * y for y in b))
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+        return dot / (norm_a * norm_b)
+
+    def _existing_question_embeddings(self, project_id: str) -> list[list[float]]:
+        existing = (
+            self.supabase.table("questions")
+            .select("question_text")
+            .eq("project_id", project_id)
+            .eq("status", "active")
+            .order("created_at", desc=True)
+            .limit(200)
+            .execute()
+        ).data
+
+        texts = [
+            str(row.get("question_text") or "").strip()
+            for row in existing
+            if str(row.get("question_text") or "").strip()
+        ]
+        return self.embedding_service.embed_many(texts) if texts else []
+
+    def _topic_lookup(self, project_id: str) -> tuple[dict[str, str], list[str]]:
+        topics = (
+            self.supabase.table("topics")
+            .select("id, name")
+            .eq("project_id", project_id)
+            .execute()
+        ).data
+
+        by_name = {
+            str(topic["name"]).strip().casefold(): topic["id"]
+            for topic in topics
+            if topic.get("name")
+        }
+        names = [str(topic["name"]) for topic in topics if topic.get("name")]
+        return by_name, names
+
     def generate_questions(
         self,
         project_id: str,
         count: int = 5,
         question_type: str = "mcq",
     ) -> list[dict]:
-        chunks = self._active_chunks(project_id, limit=max(8, count * 3))
+        chunks = self._active_chunks(project_id, limit=max(10, count * 4))
         if not chunks:
             raise ValueError("No ready active chunks found for this project")
 
         context_parts: list[str] = []
-        chunk_ids: list[str] = []
         for i, chunk in enumerate(chunks, start=1):
             filename = (chunk.get("document_versions") or {}).get(
                 "original_filename", "unknown"
@@ -66,42 +116,70 @@ class QuizService:
                 f"[Chunk {i} | {filename} | page {chunk.get('page_number')}]\n"
                 f"{chunk['content']}"
             )
-            chunk_ids.append(chunk["id"])
 
         context = "\n\n".join(context_parts)
+        topic_lookup, topic_names = self._topic_lookup(project_id)
+        candidate_count = min(30, max(count + 2, count * 2))
+
+        common_fields = """
+Every item MUST include:
+  "source_chunk_numbers": [1, 2],
+  "topic_name": "exact topic name from TOPICS or null"
+
+source_chunk_numbers must only contain chunks that directly support the question and answer.
+"""
 
         if question_type == "essay":
-            shape = """
-Return ONLY a JSON array. Each item:
-{
+            shape = f"""
+Return ONLY a JSON array with up to {candidate_count} candidate items.
+Each item:
+{{
   "question_text": "...",
   "model_answer": "...",
   "key_points": ["...", "..."],
-  "max_score": 10
-}
+  "max_score": 10,
+  "source_chunk_numbers": [1, 2],
+  "topic_name": null
+}}
+{common_fields}
 """
         else:
-            shape = """
-Return ONLY a JSON array. Each item:
-{
+            shape = f"""
+Return ONLY a JSON array with up to {candidate_count} candidate items.
+Each item:
+{{
   "question_text": "...",
   "options": ["A", "B", "C", "D"],
   "correct_answer": "exact option text",
   "explanation": "...",
-  "max_score": 1
-}
+  "max_score": 1,
+  "source_chunk_numbers": [1, 2],
+  "topic_name": null
+}}
+{common_fields}
 """
+
+        topics_text = (
+            "\n".join(f"- {name}" for name in topic_names)
+            if topic_names
+            else "(No roadmap topics generated yet)"
+        )
 
         prompt = f"""
 Bạn là hệ thống sinh quiz cho sinh viên.
 Chỉ được dùng thông tin trong CONTEXT bên dưới.
 
-Hãy tạo đúng {count} câu hỏi loại {question_type}.
+Mục tiêu cuối cùng: giữ tối đa {count} câu hỏi loại {question_type}
+sau khi hệ thống loại câu trùng nghĩa.
 - Không hỏi điều không có trong context.
 - Câu hỏi phải kiểm tra hiểu biết, không chỉ chép nguyên câu.
 - Tránh câu mơ hồ.
+- Các candidate phải khác nhau rõ rệt về ý nghĩa.
 - Ngôn ngữ câu hỏi theo ngôn ngữ chủ yếu của context.
 {shape}
+
+TOPICS:
+{topics_text}
 
 CONTEXT:
 {context}
@@ -115,38 +193,122 @@ CONTEXT:
         if not isinstance(parsed, list):
             raise ValueError("Gemini did not return a question array")
 
+        candidates: list[dict] = []
+        for item in parsed[:candidate_count]:
+            question_text = str(item.get("question_text") or "").strip()
+            if not question_text:
+                continue
+
+            valid_sources: list[int] = []
+            for value in item.get("source_chunk_numbers") or []:
+                try:
+                    number = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if 1 <= number <= len(chunks) and number not in valid_sources:
+                    valid_sources.append(number)
+
+            if not valid_sources:
+                continue
+
+            candidates.append(
+                {
+                    "raw": item,
+                    "question_text": question_text,
+                    "source_numbers": valid_sources[:5],
+                }
+            )
+
+        if not candidates:
+            raise ValueError("No generated question had valid source chunks")
+
+        candidate_embeddings = self.embedding_service.embed_many(
+            [candidate["question_text"] for candidate in candidates]
+        )
+        existing_embeddings = self._existing_question_embeddings(project_id)
+        accepted_embeddings = list(existing_embeddings)
+
         inserted: list[dict] = []
-        for item in parsed[:count]:
+        for candidate, embedding in zip(candidates, candidate_embeddings):
+            is_duplicate = any(
+                self._cosine_similarity(embedding, previous)
+                >= self.DEDUP_THRESHOLD
+                for previous in accepted_embeddings
+            )
+            if is_duplicate:
+                continue
+
+            item = candidate["raw"]
+            topic_name = str(item.get("topic_name") or "").strip()
+            topic_id = topic_lookup.get(topic_name.casefold()) if topic_name else None
+
             row = {
                 "project_id": project_id,
+                "topic_id": topic_id,
                 "question_type": question_type,
-                "question_text": str(item["question_text"]).strip(),
+                "question_text": candidate["question_text"],
                 "options": item.get("options"),
                 "correct_answer": item.get("correct_answer"),
                 "model_answer": item.get("model_answer") or item.get("explanation"),
                 "key_points": item.get("key_points"),
-                "rubric": None,
-                "max_score": item.get("max_score", 1 if question_type == "mcq" else 10),
+                "rubric": item.get("rubric"),
+                "max_score": item.get(
+                    "max_score",
+                    1 if question_type == "mcq" else 10,
+                ),
+                "question_embedding": embedding,
                 "status": "active",
                 "model_name": self.gemini_model,
-                "prompt_version": "quiz-generate-v1",
+                "prompt_version": "quiz-generate-v2",
             }
             result = self.supabase.table("questions").insert(row).execute()
             question = result.data[0]
-            inserted.append(question)
 
-            self.supabase.table("question_sources").insert(
-                [
-                    {"question_id": question["id"], "chunk_id": chunk_id}
-                    for chunk_id in chunk_ids[: min(5, len(chunk_ids))]
-                ]
-            ).execute()
+            source_rows = [
+                {
+                    "question_id": question["id"],
+                    "chunk_id": chunks[number - 1]["id"],
+                }
+                for number in candidate["source_numbers"]
+            ]
+            self.supabase.table("question_sources").insert(source_rows).execute()
+
+            inserted.append(question)
+            accepted_embeddings.append(embedding)
+
+            if len(inserted) >= count:
+                break
+
+        if not inserted:
+            raise ValueError(
+                "All generated questions were removed as semantic duplicates"
+            )
 
         return inserted
 
     def grade_essay(self, question: dict, user_answer: str) -> dict:
+        source_rows = (
+            self.supabase.table("question_sources")
+            .select("chunks(content, page_number, document_versions(original_filename))")
+            .eq("question_id", question["id"])
+            .execute()
+        ).data
+
+        evidence_parts: list[str] = []
+        for row in source_rows:
+            chunk = row.get("chunks") or {}
+            filename = (chunk.get("document_versions") or {}).get(
+                "original_filename",
+                "unknown",
+            )
+            evidence_parts.append(
+                f"[{filename} | page {chunk.get('page_number')}]\n"
+                f"{chunk.get('content') or ''}"
+            )
+        evidence = "\n\n".join(evidence_parts)
+
         prompt = f"""
-Chấm câu trả lời của sinh viên chỉ dựa trên đáp án mẫu và key points.
+Chấm câu trả lời của sinh viên chỉ dựa trên rubric/key points và evidence nguồn.
 
 Question:
 {question['question_text']}
@@ -157,6 +319,12 @@ Model answer:
 Key points:
 {json.dumps(question.get('key_points') or [], ensure_ascii=False)}
 
+Rubric:
+{json.dumps(question.get('rubric') or {}, ensure_ascii=False)}
+
+Evidence:
+{evidence}
+
 Student answer:
 {user_answer}
 
@@ -165,7 +333,7 @@ Maximum score: {question['max_score']}
 Return ONLY JSON:
 {{
   "score": number,
-  "feedback": "ngắn gọn, cụ thể",
+  "feedback": "ngắn gọn, cụ thể; nói rõ ý đúng và ý còn thiếu",
   "is_correct": boolean
 }}
 """.strip()
@@ -181,7 +349,7 @@ Return ONLY JSON:
             "score": score,
             "feedback": str(result.get("feedback", "")),
             "is_correct": bool(result.get("is_correct", False)),
-            "grading_method": "gemini-rubric",
+            "grading_method": "gemini-rubric-evidence-v2",
         }
 
     def update_review_state(
