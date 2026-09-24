@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
+from datetime import datetime, timezone
 from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
@@ -18,6 +21,13 @@ router = APIRouter()
 
 class MessageCreate(BaseModel):
     content: str
+
+
+def _sse(event: str, payload: dict) -> str:
+    return (
+        f"event: {event}\n"
+        f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+    )
 
 
 @router.get("/projects/{project_id}/chat/sessions")
@@ -170,7 +180,6 @@ async def send_message(
     if session.data.get("title") == "New conversation":
         session_update["title"] = body.content[:80]
 
-    from datetime import datetime, timezone
     session_update["updated_at"] = datetime.now(timezone.utc).isoformat()
 
     db.table("chat_sessions").update(session_update).eq(
