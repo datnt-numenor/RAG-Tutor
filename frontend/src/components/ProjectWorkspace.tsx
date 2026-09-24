@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { FormEvent, useMemo, useState } from "react";
 import { CollaborationPanel } from "@/components/CollaborationPanel";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -220,6 +221,14 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
+                    {doc.active_version_id && (
+                      <Link
+                        href={"/projects/" + projectId + "/documents/" + doc.id}
+                        className="rounded-xl border border-[#8b9d83]/25 bg-[#eef3eb] px-3 py-2 text-xs font-semibold text-[#587052]"
+                      >
+                        Open PDF
+                      </Link>
+                    )}
                     <span
                       className={
                         "rounded-full px-3 py-1 text-xs font-medium " +
