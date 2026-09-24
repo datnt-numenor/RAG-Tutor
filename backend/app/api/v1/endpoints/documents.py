@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from typing import Annotated
 from uuid import UUID
 
@@ -15,6 +16,27 @@ router = APIRouter()
 
 ALLOWED_MIME = {"application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
+
+
+def _validate_document_magic(content: bytes, mime_type: str) -> bool:
+    if mime_type == "application/pdf":
+        return content.startswith(b"%PDF-")
+
+    if mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        # DOCX is an OOXML ZIP container.
+        return content.startswith(b"PK\x03\x04")
+
+    return False
+
+
+def _safe_filename(filename: str | None, fallback: str = "document") -> str:
+    raw = (filename or fallback).replace("\\", "/").split("/")[-1].strip()
+    if not raw:
+        raw = fallback
+
+    safe = re.sub(r"[^A-Za-z0-9._()\-\u00C0-\u024F\u1E00-\u1EFF ]+", "_", raw)
+    safe = re.sub(r"\s+", " ", safe).strip(" .")
+    return safe[:180] or fallback
 
 
 def _assert_owner(db, project_id: str, user_id: str) -> None:
@@ -47,20 +69,27 @@ async def upload_document(
     db = get_supabase_admin()
     _assert_owner(db, str(project_id), current_user.user_id)
 
-    # Validate MIME
     content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="File is empty")
     if len(content) > MAX_FILE_SIZE:
         raise HTTPException(status_code=413, detail="File too large (max 50 MB)")
     if file.content_type not in ALLOWED_MIME:
         raise HTTPException(status_code=415, detail="Only PDF and DOCX are supported")
+    if not _validate_document_magic(content, file.content_type):
+        raise HTTPException(
+            status_code=415,
+            detail="File content does not match its declared PDF/DOCX type",
+        )
 
+    filename = _safe_filename(file.filename)
     sha256 = hashlib.sha256(content).hexdigest()
 
     # Create document record
     doc_res = db.table("documents").insert({
         "project_id": str(project_id),
         "created_by": current_user.user_id,
-        "display_name": file.filename,
+        "display_name": filename,
         "status": "active",
     }).execute()
     document_id = doc_res.data[0]["id"]
@@ -76,7 +105,7 @@ async def upload_document(
     )
     version_number = (prev_versions.data[0]["version_number"] + 1) if prev_versions.data else 1
 
-    storage_path = f"projects/{project_id}/documents/{document_id}/versions/v{version_number}/{file.filename}"
+    storage_path = f"projects/{project_id}/documents/{document_id}/versions/v{version_number}/{filename}"
 
     # Upload to Supabase Storage
     db.storage.from_("documents").upload(storage_path, content, {"content-type": file.content_type})
@@ -87,7 +116,7 @@ async def upload_document(
         "project_id": str(project_id),
         "version_number": version_number,
         "storage_path": storage_path,
-        "original_filename": file.filename,
+        "original_filename": filename,
         "mime_type": file.content_type,
         "file_size": len(content),
         "sha256": sha256,
@@ -159,6 +188,11 @@ async def upload_document_version(
         raise HTTPException(status_code=413, detail="File too large (max 50 MB)")
     if file.content_type not in ALLOWED_MIME:
         raise HTTPException(status_code=415, detail="Only PDF and DOCX are supported")
+    if not _validate_document_magic(content, file.content_type):
+        raise HTTPException(
+            status_code=415,
+            detail="File content does not match its declared PDF/DOCX type",
+        )
 
     sha256 = hashlib.sha256(content).hexdigest()
 
@@ -188,7 +222,7 @@ async def upload_document_version(
         int(latest.data[0]["version_number"]) + 1 if latest.data else 1
     )
 
-    filename = file.filename or f"version-{version_number}"
+    filename = _safe_filename(file.filename, f"version-{version_number}")
     storage_path = (
         f"projects/{project_id}/documents/{document_id}/"
         f"versions/v{version_number}/{filename}"
