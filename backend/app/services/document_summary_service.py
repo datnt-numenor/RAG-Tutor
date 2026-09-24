@@ -3,13 +3,20 @@ from __future__ import annotations
 from functools import lru_cache
 
 from google import genai
+from google.genai import types
 
 from app.core.config import get_settings
 
 
 class DocumentSummaryService:
     def __init__(self, api_key: str, model: str):
-        self.client = genai.Client(api_key=api_key)
+        self.client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(
+                timeout=30_000,
+                retry_options=types.HttpRetryOptions(attempts=1),
+            ),
+        )
         self.model = model
 
     def summarize(
