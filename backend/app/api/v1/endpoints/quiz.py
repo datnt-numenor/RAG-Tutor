@@ -130,14 +130,23 @@ async def generate_quiz(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
+        error_name = exc.__class__.__name__
         logger.exception(
             "quiz_generation_failed",
             project_id=str(project_id),
-            error=exc.__class__.__name__,
+            error=error_name,
         )
+        if error_name == "RateLimitError":
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    "Gemini quota for the quiz model is exhausted. "
+                    "Please try again after the provider quota resets."
+                ),
+            ) from exc
         raise HTTPException(
             status_code=502,
-            detail=f"Quiz generation failed: {exc.__class__.__name__}",
+            detail=f"Quiz generation failed: {error_name}",
         ) from exc
 
     ids = [q["id"] for q in questions]
