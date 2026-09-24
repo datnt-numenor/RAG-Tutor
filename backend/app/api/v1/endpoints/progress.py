@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
@@ -87,7 +88,7 @@ async def progress_overview(
         .select("id, project_id, due_at")
         .in_("project_id", project_ids)
         .eq("user_id", current_user.user_id)
-        .lte("due_at", "now()")
+        .lte("due_at", datetime.now(timezone.utc).isoformat())
         .execute()
     )
 
