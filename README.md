@@ -334,6 +334,44 @@ sign in
 
 Không commit test password hoặc access token vào repository.
 
+## Multi-user authorization smoke test
+
+Dùng **hai tài khoản test khác nhau** để kiểm tra project isolation, invitation và revoke quyền sau khi remove member:
+
+```powershell
+cd backend
+
+$env:RAGTUTOR_OWNER_EMAIL="owner-test@example.com"
+$env:RAGTUTOR_OWNER_PASSWORD="<password>"
+$env:RAGTUTOR_MEMBER_EMAIL="member-test@example.com"
+$env:RAGTUTOR_MEMBER_PASSWORD="<password>"
+
+# Optional: bật thêm direct Supabase RLS verification
+$env:SUPABASE_URL="https://<project-ref>.supabase.co"
+$env:SUPABASE_ANON_KEY="<anon-key>"
+
+python scripts/security_e2e.py
+```
+
+Script kiểm tra:
+
+```text
+Account A creates Project A
+Account B creates Project B
+→ A cannot read B
+→ B cannot read A
+→ A invites B
+→ B accepts
+→ B can read A
+→ B cannot upload/manage invitations
+→ A removes B
+→ B immediately loses project access
+→ B cannot reopen old chat session
+→ optional direct Supabase REST confirms the same RLS isolation
+```
+
+Không dùng tài khoản production thật cho smoke test vì script tạo temporary projects.
+
 ## RAG evaluation
 
 Create a fixed JSONL dataset such as:
