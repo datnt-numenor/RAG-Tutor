@@ -6,7 +6,7 @@ services:
     dockerContext: ./backend
     plan: free
     autoDeploy: true
-    healthCheckPath: /health
+    healthCheckPath: /health/ready
     envVars:
       - key: APP_ENV
         value: production
