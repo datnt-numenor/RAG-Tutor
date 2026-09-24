@@ -224,25 +224,42 @@ async def delete_project(
         )
 
     # Project-scoped relational data is removed through database CASCADE FKs.
-    # Document binary objects are deleted first so Storage does not become orphaned.
+    # Delete private Storage objects first so DB cascades cannot orphan binaries.
     versions = (
         db.table("document_versions")
         .select("storage_path")
         .eq("project_id", str(project_id))
         .execute()
     )
-    storage_paths = [
+    document_paths = [
         row["storage_path"]
         for row in versions.data
         if row.get("storage_path")
     ]
-    if storage_paths:
-        try:
-            db.storage.from_("documents").remove(storage_paths)
-        except Exception:
-            # Relational deletion remains safe and authoritative. Orphan cleanup
-            # can be retried separately if Storage is temporarily unavailable.
-            pass
+
+    attempts = (
+        db.table("quiz_attempts")
+        .select("image_storage_path")
+        .eq("project_id", str(project_id))
+        .not_.is_("image_storage_path", "null")
+        .execute()
+    )
+    scan_paths = [
+        row["image_storage_path"]
+        for row in attempts.data
+        if row.get("image_storage_path")
+    ]
+
+    try:
+        if document_paths:
+            db.storage.from_("documents").remove(document_paths)
+        if scan_paths:
+            db.storage.from_("quiz-submissions").remove(scan_paths)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Project files could not be removed from Storage",
+        ) from exc
 
     db.table("projects").delete().eq("id", str(project_id)).execute()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
