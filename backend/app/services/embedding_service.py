@@ -17,6 +17,18 @@ class EmbeddingService:
         settings = get_settings()
         self.model_name = model_name or settings.embedding_model
         self.model = _load_model(self.model_name)
+        self.max_seq_length = int(getattr(self.model, "max_seq_length", 256) or 256)
+
+    def count_tokens(self, text: str) -> int:
+        tokenizer = self.model.tokenizer
+        encoded = tokenizer(
+            text,
+            add_special_tokens=True,
+            truncation=False,
+            return_attention_mask=False,
+            return_token_type_ids=False,
+        )
+        return len(encoded["input_ids"])
 
     def embed(self, text: str) -> list[float]:
         return self.model.encode(text).tolist()
