@@ -34,7 +34,6 @@ import {
 export function ProjectWorkspace({ projectId }: { projectId: string }) {
   const queryClient = useQueryClient();
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [versionFiles, setVersionFiles] = useState<Record<string, File | null>>({});
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [pendingQuestion, setPendingQuestion] = useState("");
@@ -152,8 +151,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
   const versionUpload = useMutation({
     mutationFn: async ({ documentId, file }: { documentId: string; file: File }) =>
       uploadDocumentVersion(projectId, documentId, file),
-    onSuccess: async (_data, vars) => {
-      setVersionFiles((current) => ({ ...current, [vars.documentId]: null }));
+    onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["documents", projectId] }),
         queryClient.invalidateQueries({ queryKey: ["document-jobs", projectId] }),
@@ -286,7 +284,6 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
                         onChange={(e) => {
                           const file = e.target.files?.[0];
                           if (!file) return;
-                          setVersionFiles((current) => ({ ...current, [doc.id]: file }));
                           versionUpload.mutate({ documentId: doc.id, file });
                           e.target.value = "";
                         }}
