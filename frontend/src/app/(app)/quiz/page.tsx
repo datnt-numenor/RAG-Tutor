@@ -17,6 +17,7 @@ import {
   getQuizSession,
   listProjects,
   listQuizSessions,
+  startQuizFromBank,
   submitQuiz,
   uploadEssayScan,
   type QuizAttempt,
@@ -54,6 +55,21 @@ export default function QuizPage() {
   const generate = useMutation({
     mutationFn: () =>
       generateQuiz(selectedProjectId, {
+        count,
+        question_type: type,
+      }),
+    onSuccess: async (data) => {
+      setActiveSessionId(data.session.id);
+      setAnswers({});
+      await queryClient.invalidateQueries({
+        queryKey: ["quiz-sessions", selectedProjectId],
+      });
+    },
+  });
+
+  const startBank = useMutation({
+    mutationFn: () =>
+      startQuizFromBank(selectedProjectId, {
         count,
         question_type: type,
       }),
@@ -210,28 +226,42 @@ export default function QuizPage() {
             />
           </label>
 
-          <button
-            disabled={!selectedProjectId || generate.isPending}
-            onClick={() => generate.mutate()}
-            className="inline-flex items-center justify-center gap-2 rounded-2xl bg-[#b9634c] px-5 py-3 font-semibold text-white disabled:opacity-50"
-          >
-            {generate.isPending ? (
-              <>
-                <Loader2 size={18} className="animate-spin" />
-                Đang sinh...
-              </>
-            ) : (
-              <>
-                <Sparkles size={18} />
-                Generate quiz
-              </>
-            )}
-          </button>
+          <div className="flex gap-2">
+            <button
+              disabled={!selectedProjectId || generate.isPending}
+              onClick={() => generate.mutate()}
+              className="inline-flex items-center justify-center gap-2 rounded-2xl bg-[#b9634c] px-4 py-3 text-sm font-semibold text-white disabled:opacity-50"
+            >
+              {generate.isPending ? (
+                <>
+                  <Loader2 size={18} className="animate-spin" />
+                  Đang sinh...
+                </>
+              ) : (
+                <>
+                  <Sparkles size={18} />
+                  Generate
+                </>
+              )}
+            </button>
+            <button
+              disabled={!selectedProjectId || startBank.isPending}
+              onClick={() => startBank.mutate()}
+              className="rounded-2xl border border-[#b9634c]/20 bg-[#fff8f3] px-4 py-3 text-sm font-semibold text-[#9b4d3b] disabled:opacity-50"
+            >
+              {startBank.isPending ? "Đang mở..." : "Start bank"}
+            </button>
+          </div>
         </div>
 
         {generate.isError && (
           <div className="mt-4 rounded-xl bg-red-50 p-3 text-sm text-red-700">
-            Không sinh được quiz. Project cần ít nhất một document đã ingest xong.
+            Không sinh được question bank. Chỉ owner được generate và project cần document đã ingest xong.
+          </div>
+        )}
+        {startBank.isError && (
+          <div className="mt-4 rounded-xl bg-amber-50 p-3 text-sm text-amber-800">
+            Question bank chưa có câu phù hợp. Owner cần generate câu hỏi trước.
           </div>
         )}
       </section>
