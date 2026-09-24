@@ -205,12 +205,13 @@ export function PdfDocumentViewer({
   useEffect(() => {
     if (!pdf || !canvasRef.current) return;
 
+    const currentPdf = pdf;
     let cancelled = false;
     let renderTask: { promise: Promise<unknown>; cancel: () => void } | null = null;
     const canvas = canvasRef.current;
 
     async function renderPage() {
-      const page = await pdf.getPage(pageNumber);
+      const page = await currentPdf.getPage(pageNumber);
       if (cancelled) return;
 
       const viewport = page.getViewport({ scale });
