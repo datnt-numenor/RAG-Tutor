@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   BookOpen,
@@ -34,14 +34,12 @@ export default function SettingsPage() {
     queryFn: getMyProfile,
   });
 
-  const [fullName, setFullName] = useState("");
-  const [timezone, setTimezone] = useState("Asia/Ho_Chi_Minh");
+  const [fullNameOverride, setFullNameOverride] = useState<string | null>(null);
+  const [timezoneOverride, setTimezoneOverride] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!profile.data) return;
-    setFullName(profile.data.full_name ?? "");
-    setTimezone(profile.data.timezone || "Asia/Ho_Chi_Minh");
-  }, [profile.data]);
+  const fullName = fullNameOverride ?? profile.data?.full_name ?? "";
+  const timezone =
+    timezoneOverride ?? profile.data?.timezone ?? "Asia/Ho_Chi_Minh";
 
   const save = useMutation({
     mutationFn: () =>
@@ -51,6 +49,8 @@ export default function SettingsPage() {
       }),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["my-profile"] });
+      setFullNameOverride(null);
+      setTimezoneOverride(null);
     },
   });
 
@@ -93,7 +93,7 @@ export default function SettingsPage() {
             <input
               value={fullName}
               maxLength={120}
-              onChange={(event) => setFullName(event.target.value)}
+              onChange={(event) => setFullNameOverride(event.target.value)}
               className="w-full rounded-2xl border border-[#705541]/15 bg-white/75 px-4 py-3 outline-none focus:border-[#b9634c]/40"
               placeholder="Nguyễn Văn A"
             />
@@ -107,7 +107,7 @@ export default function SettingsPage() {
             <input
               list="ragtutor-timezones"
               value={timezone}
-              onChange={(event) => setTimezone(event.target.value)}
+              onChange={(event) => setTimezoneOverride(event.target.value)}
               className="w-full rounded-2xl border border-[#705541]/15 bg-white/75 px-4 py-3 outline-none focus:border-[#b9634c]/40"
               placeholder="Asia/Ho_Chi_Minh"
             />
