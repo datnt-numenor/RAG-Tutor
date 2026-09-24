@@ -37,10 +37,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
 
   useEffect(() => {
-    setMobileOpen(false);
-  }, [pathname]);
-
-  useEffect(() => {
     if (!mobileOpen) return;
     const previous = document.body.style.overflow;
     document.body.style.overflow = "hidden";
@@ -72,7 +68,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </button>
             </div>
 
-            <Navigation pathname={pathname} />
+            <Navigation
+              pathname={pathname}
+              onNavigate={() => setMobileOpen(false)}
+            />
 
             <div className="mt-auto space-y-4">
               <div className="rotate-[-1deg] rounded-2xl bg-[#f3df9e] p-4">
@@ -176,7 +175,13 @@ function Brand() {
   );
 }
 
-function Navigation({ pathname }: { pathname: string }) {
+function Navigation({
+  pathname,
+  onNavigate,
+}: {
+  pathname: string;
+  onNavigate?: () => void;
+}) {
   return (
     <nav className="space-y-1">
       {items.map((item) => {
@@ -188,6 +193,7 @@ function Navigation({ pathname }: { pathname: string }) {
           <Link
             key={item.href}
             href={item.href}
+            onClick={onNavigate}
             className={
               "flex items-center gap-3 rounded-2xl px-4 py-3 text-sm font-medium transition " +
               (active
