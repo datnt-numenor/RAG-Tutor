@@ -100,6 +100,40 @@ class ProgressService:
 
         return event
 
+    def remove_event(
+        self,
+        *,
+        user_id: str,
+        idempotency_key: str,
+    ) -> None:
+        existing = (
+            self.supabase.table("study_events")
+            .select("project_id, occurred_at")
+            .eq("user_id", user_id)
+            .eq("idempotency_key", idempotency_key)
+            .maybe_single()
+            .execute()
+        )
+        if not existing.data:
+            return
+
+        occurred_at = datetime.fromisoformat(
+            existing.data["occurred_at"].replace("Z", "+00:00")
+        )
+        project_id = existing.data["project_id"]
+
+        self.supabase.table("study_events").delete().eq(
+            "user_id", user_id
+        ).eq(
+            "idempotency_key", idempotency_key
+        ).execute()
+
+        self.rebuild_snapshot(
+            user_id=user_id,
+            project_id=project_id,
+            snapshot_date=self._local_date_for(user_id, occurred_at),
+        )
+
     def rebuild_snapshot(
         self,
         *,
