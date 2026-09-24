@@ -1,0 +1,175 @@
+name: Runtime E2E
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ragtutor-runtime-e2e
+  cancel-in-progress: false
+
+jobs:
+  runtime-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    defaults:
+      run:
+        working-directory: backend
+
+    env:
+      APP_ENV: development
+      ALLOWED_ORIGINS: http://localhost:3000
+      REDIS_URL: redis://127.0.0.1:6379/0
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GEMINI_MODEL: gemini-3.6-flash
+      EMBEDDING_MODEL: paraphrase-multilingual-MiniLM-L12-v2
+      EMBEDDING_DIM: "384"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Validate required secrets
+        run: |
+          python - <<'PY'
+          import os
+          required = [
+              "SUPABASE_URL",
+              "SUPABASE_ANON_KEY",
+              "SUPABASE_SERVICE_KEY",
+              "GEMINI_API_KEY",
+          ]
+          missing = [name for name in required if not os.getenv(name)]
+          if missing:
+              raise SystemExit(
+                  "Missing GitHub Actions secrets: " + ", ".join(missing)
+              )
+          print("Required runtime secrets are configured.")
+          PY
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Generate temporary test identities
+        run: |
+          PASSWORD=$(python - <<'PY'
+          import secrets
+          print("Rt!" + secrets.token_urlsafe(24) + "9a")
+          PY
+          )
+          echo "::add-mask::$PASSWORD"
+          echo "RAGTUTOR_E2E_PASSWORD=$PASSWORD" >> "$GITHUB_ENV"
+          echo "RAGTUTOR_OWNER_EMAIL=ragtutor-e2e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-owner@example.com" >> "$GITHUB_ENV"
+          echo "RAGTUTOR_MEMBER_EMAIL=ragtutor-e2e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-member@example.com" >> "$GITHUB_ENV"
+
+      - name: Create temporary Supabase users
+        run: |
+          OWNER_JSON=$(python scripts/manage_e2e_users.py create             --email "$RAGTUTOR_OWNER_EMAIL"             --password "$RAGTUTOR_E2E_PASSWORD"             --full-name "RAGTutor E2E Owner")
+          MEMBER_JSON=$(python scripts/manage_e2e_users.py create             --email "$RAGTUTOR_MEMBER_EMAIL"             --password "$RAGTUTOR_E2E_PASSWORD"             --full-name "RAGTutor E2E Member")
+
+          OWNER_ID=$(python -c 'import json,sys; print(json.loads(sys.argv[1])["id"])' "$OWNER_JSON")
+          MEMBER_ID=$(python -c 'import json,sys; print(json.loads(sys.argv[1])["id"])' "$MEMBER_JSON")
+
+          echo "RAGTUTOR_OWNER_ID=$OWNER_ID" >> "$GITHUB_ENV"
+          echo "RAGTUTOR_MEMBER_ID=$MEMBER_ID" >> "$GITHUB_ENV"
+
+      - name: Start FastAPI and Celery
+        run: |
+          nohup uvicorn main:app --host 127.0.0.1 --port 8000             > /tmp/ragtutor-api.log 2>&1 &
+          echo $! > /tmp/ragtutor-api.pid
+
+          nohup celery -A app.workers.celery_app.celery_app worker             --loglevel=info --concurrency=1             > /tmp/ragtutor-worker.log 2>&1 &
+          echo $! > /tmp/ragtutor-worker.pid
+
+      - name: Wait for runtime readiness
+        run: |
+          python - <<'PY'
+          import time
+          import httpx
+
+          deadline = time.monotonic() + 120
+          last = ""
+          while time.monotonic() < deadline:
+              try:
+                  response = httpx.get(
+                      "http://127.0.0.1:8000/health/ready",
+                      timeout=5,
+                  )
+                  last = response.text
+                  if response.status_code == 200:
+                      print(last)
+                      raise SystemExit(0)
+              except Exception as exc:
+                  last = repr(exc)
+              time.sleep(2)
+
+          raise SystemExit("Runtime did not become ready: " + last)
+          PY
+
+      - name: Run vertical-slice smoke E2E and fixed RAG evaluation
+        env:
+          RAGTUTOR_TEST_EMAIL: ${{ env.RAGTUTOR_OWNER_EMAIL }}
+          RAGTUTOR_TEST_PASSWORD: ${{ env.RAGTUTOR_E2E_PASSWORD }}
+        run: |
+          python scripts/smoke_e2e.py             --base-url http://127.0.0.1:8000/api/v1             --timeout 240             --eval-output evaluation/runtime-e2e-result.json
+
+      - name: Run two-user authorization E2E
+        env:
+          RAGTUTOR_OWNER_PASSWORD: ${{ env.RAGTUTOR_E2E_PASSWORD }}
+          RAGTUTOR_MEMBER_PASSWORD: ${{ env.RAGTUTOR_E2E_PASSWORD }}
+        run: |
+          python scripts/security_e2e.py             --base-url http://127.0.0.1:8000/api/v1             --owner-email "$RAGTUTOR_OWNER_EMAIL"             --owner-password "$RAGTUTOR_OWNER_PASSWORD"             --member-email "$RAGTUTOR_MEMBER_EMAIL"             --member-password "$RAGTUTOR_MEMBER_PASSWORD"             --supabase-url "$SUPABASE_URL"             --supabase-anon-key "$SUPABASE_ANON_KEY"
+
+      - name: Upload RAG evaluation metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-e2e-rag-evaluation
+          path: backend/evaluation/runtime-e2e-result.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Print runtime logs on failure
+        if: failure()
+        run: |
+          echo "===== FastAPI ====="
+          tail -n 300 /tmp/ragtutor-api.log || true
+          echo "===== Celery ====="
+          tail -n 300 /tmp/ragtutor-worker.log || true
+
+      - name: Delete temporary Supabase users
+        if: always()
+        run: |
+          if [ -n "${RAGTUTOR_OWNER_ID:-}" ]; then
+            python scripts/manage_e2e_users.py delete --user-id "$RAGTUTOR_OWNER_ID" || true
+          fi
+          if [ -n "${RAGTUTOR_MEMBER_ID:-}" ]; then
+            python scripts/manage_e2e_users.py delete --user-id "$RAGTUTOR_MEMBER_ID" || true
+          fi
+
+      - name: Stop local processes
+        if: always()
+        run: |
+          [ -f /tmp/ragtutor-api.pid ] && kill "$(cat /tmp/ragtutor-api.pid)" || true
+          [ -f /tmp/ragtutor-worker.pid ] && kill "$(cat /tmp/ragtutor-worker.pid)" || true
