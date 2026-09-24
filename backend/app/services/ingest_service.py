@@ -90,11 +90,27 @@ class IngestService:
         now = datetime.now(timezone.utc).isoformat()
 
         try:
+            job_res = (
+                self.supabase.table("document_jobs")
+                .select("attempt_count, max_attempts")
+                .eq("id", job_id)
+                .single()
+                .execute()
+            )
+            current_attempt = int(job_res.data.get("attempt_count") or 0)
+            max_attempts = int(job_res.data.get("max_attempts") or 3)
+            next_attempt = current_attempt + 1
+
+            if next_attempt > max_attempts:
+                raise RuntimeError(
+                    f"Ingest job exceeded max attempts ({max_attempts})"
+                )
+
             self.supabase.table("document_jobs").update(
                 {
                     "status": "running",
                     "stage": "extract",
-                    "attempt_count": 1,
+                    "attempt_count": next_attempt,
                     "last_error": None,
                     "updated_at": now,
                 }
