@@ -5,7 +5,7 @@ import secrets
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, EmailStr
 
 from app.core.auth import AuthenticatedUser, get_current_user
@@ -87,12 +87,12 @@ async def list_invitations(
     return res.data
 
 
-@router.delete("/projects/{project_id}/invitations/{invitation_id}", status_code=204)
+@router.delete("/projects/{project_id}/invitations/{invitation_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
 async def revoke_invitation(
     project_id: UUID,
     invitation_id: UUID,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
-) -> None:
+) -> Response:
     db = get_supabase_admin()
     owner = (
         db.table("project_members").select("id")
@@ -105,6 +105,8 @@ async def revoke_invitation(
     db.table("project_invitations").update({"status": "revoked"}).eq(
         "id", str(invitation_id)
     ).eq("project_id", str(project_id)).execute()
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/{raw_token}")
@@ -145,10 +147,12 @@ async def accept_invitation(
     return {"message": "Joined project successfully"}
 
 
-@router.post("/{raw_token}/reject", status_code=204)
-async def reject_invitation(raw_token: str) -> None:
+@router.post("/{raw_token}/reject", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
+async def reject_invitation(raw_token: str) -> Response:
     db = get_supabase_admin()
     token_hash = _hash_token(raw_token)
     db.table("project_invitations").update({"status": "rejected"}).eq(
         "token_hash", token_hash
     ).eq("status", "pending").execute()
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
