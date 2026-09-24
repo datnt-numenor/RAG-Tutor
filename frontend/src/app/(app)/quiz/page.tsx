@@ -8,6 +8,7 @@ import {
   ExternalLink,
   ImageUp,
   Loader2,
+  RotateCcw,
   Sparkles,
   Trash2,
   XCircle,
@@ -19,8 +20,10 @@ import {
   generateQuiz,
   getEssayScanSignedUrl,
   getQuizSession,
+  listDueReviews,
   listProjects,
   listQuizSessions,
+  startDueReview,
   startQuizFromBank,
   submitQuiz,
   uploadEssayScan,
@@ -42,6 +45,12 @@ export default function QuizPage() {
   const sessions = useQuery({
     queryKey: ["quiz-sessions", selectedProjectId],
     queryFn: () => listQuizSessions(selectedProjectId),
+    enabled: Boolean(selectedProjectId),
+  });
+
+  const dueReviews = useQuery({
+    queryKey: ["due-reviews", selectedProjectId],
+    queryFn: () => listDueReviews(selectedProjectId, 50),
     enabled: Boolean(selectedProjectId),
   });
 
@@ -86,6 +95,26 @@ export default function QuizPage() {
     },
   });
 
+  const startReview = useMutation({
+    mutationFn: () =>
+      startDueReview(
+        selectedProjectId,
+        Math.min(10, Math.max(1, dueReviews.data?.length ?? 1)),
+      ),
+    onSuccess: async (data) => {
+      setActiveSessionId(data.session.id);
+      setAnswers({});
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["quiz-sessions", selectedProjectId],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["due-reviews", selectedProjectId],
+        }),
+      ]);
+    },
+  });
+
   const answer = useMutation({
     mutationFn: async ({
       questionId,
@@ -101,9 +130,14 @@ export default function QuizPage() {
         value,
       ),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({
-        queryKey: ["quiz-session", selectedProjectId, effectiveSessionId],
-      });
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["quiz-session", selectedProjectId, effectiveSessionId],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["due-reviews", selectedProjectId],
+        }),
+      ]);
     },
   });
 
@@ -143,9 +177,14 @@ export default function QuizPage() {
       text: string;
     }) => confirmEssayScan(attemptId, text),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({
-        queryKey: ["quiz-session", selectedProjectId, effectiveSessionId],
-      });
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["quiz-session", selectedProjectId, effectiveSessionId],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["due-reviews", selectedProjectId],
+        }),
+      ]);
     },
   });
 
@@ -268,6 +307,58 @@ export default function QuizPage() {
             Question bank chưa có câu phù hợp. Owner cần generate câu hỏi trước.
           </div>
         )}
+
+        <div className="mt-5 border-t border-[#755640]/10 pt-5">
+          <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+            <div>
+              <div className="flex items-center gap-2">
+                <RotateCcw size={17} className="text-[#70836a]" />
+                <span className="font-display text-lg font-semibold">
+                  Spaced review
+                </span>
+              </div>
+              <p className="mt-1 text-sm text-[#8a7b70]">
+                {dueReviews.isLoading
+                  ? "Đang kiểm tra lịch ôn..."
+                  : dueReviews.data?.length
+                    ? dueReviews.data.length + " câu đang đến hạn ôn lại."
+                    : "Không có câu nào đến hạn ngay lúc này."}
+              </p>
+            </div>
+
+            <button
+              disabled={
+                !selectedProjectId ||
+                startReview.isPending ||
+                dueReviews.isLoading ||
+                !dueReviews.data?.length
+              }
+              onClick={() => startReview.mutate()}
+              className="inline-flex items-center justify-center gap-2 rounded-2xl border border-[#8b9d83]/30 bg-[#eef3eb] px-4 py-3 text-sm font-semibold text-[#587052] disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              {startReview.isPending ? (
+                <>
+                  <Loader2 size={16} className="animate-spin" />
+                  Đang mở review...
+                </>
+              ) : (
+                <>
+                  <RotateCcw size={16} />
+                  Review due
+                  {dueReviews.data?.length
+                    ? " (" + dueReviews.data.length + ")"
+                    : ""}
+                </>
+              )}
+            </button>
+          </div>
+
+          {startReview.isError && (
+            <div className="mt-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-800">
+              Không thể mở review session. Danh sách đến hạn có thể vừa được cập nhật ở tab khác.
+            </div>
+          )}
+        </div>
       </section>
 
       {effectiveSessionId && activeQuiz.data && (
