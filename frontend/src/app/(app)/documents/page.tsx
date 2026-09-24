@@ -51,7 +51,11 @@ function ProjectDocuments({ projectId, projectName }: { projectId: string; proje
       </div>
       <div className="grid gap-3 md:grid-cols-2">
         {docs.data?.map((doc) => (
-          <div key={doc.id} className="flex items-center gap-3 rounded-2xl bg-white/58 p-4">
+          <Link
+            key={doc.id}
+            href={"/projects/" + projectId + "/documents/" + doc.id}
+            className="flex items-center gap-3 rounded-2xl bg-white/58 p-4 transition hover:bg-white/80"
+          >
             <FileText size={18} className="shrink-0 text-[#b9634c]" />
             <div className="min-w-0 flex-1">
               <div className="truncate text-sm font-semibold">{doc.display_name}</div>
@@ -59,7 +63,7 @@ function ProjectDocuments({ projectId, projectName }: { projectId: string; proje
                 {doc.active_version_id ? "Ready" : "Processing"}
               </div>
             </div>
-          </div>
+          </Link>
         ))}
       </div>
     </section>
