@@ -39,8 +39,10 @@ Requires real Redis, Celery, Gemini and app environment variables.
 
 - [ ] Deploy API on Railway from `datnt-numenor/RAG-Tutor` once private runtime secrets are configured.
 - [x] Provision production Redis on Railway (`RAGTutor` project).
-- [ ] Railway API and Celery services are preconfigured (root `/backend`, Dockerfile, start commands, healthcheck); attach GitHub source after private secrets are set.
-- [ ] Deploy Next.js frontend to Vercel after the production API URL is available.
+- [x] Railway worker connected to private Redis (`redis.railway.internal:6379/0`) and Celery reports ready.
+- [x] Railway public API domain created: `https://rag-tutor-api-production.up.railway.app`.
+- [x] Railway API and Celery services deployed from `main`; API, worker and Redis are online.
+- [ ] Frontend deployment: Railway service `rag-tutor-web` is building from `/frontend`; Vercel connector remains optional/follow-up.
 - [ ] Configure production CORS and public frontend environment variables.
 - [ ] Run post-deploy smoke tests.
 - [ ] Record cold-start and RAG latency measurements.
