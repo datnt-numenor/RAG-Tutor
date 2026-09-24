@@ -2,7 +2,7 @@
 
 **Mục tiêu:** Xây dựng portfolio project cho vị trí GenAI/LLM Application Developer
 **Người thực hiện:** Đạt
-**Ngân sách:** 0đ — chỉ dùng free tier / open-source
+**Ngân sách mục tiêu:** 0đ cho local/demo. Public deployment đầy đủ có một blocker cần quyết định: Render Background Worker không có free compute; cấu hình Celery worker hiện tại dùng paid `starter`.
 
 ---
 
@@ -233,13 +233,13 @@ def to_langchain_documents(chunks_with_metadata):
 | Chấm trắc nghiệm | Rule-based (so sánh đáp án) | Không cần LLM, tức thì, 100% nhất quán |
 | Chấm tự luận | Gemini Flash (LLM-as-judge) | Chấm theo rubric + evidence, lưu model/prompt version; không chỉ so với đáp án mẫu |
 | Nộp bài bằng ảnh scan | Gemini multimodal/vision | Lưu private, OCR trước, bắt buộc user xác nhận/sửa text rồi mới chấm |
-| Deploy Backend | Render free tier (hoặc HuggingFace Spaces bằng Docker) | Free, dễ deploy từ GitHub; lưu ý free tier có thể "ngủ" sau thời gian không hoạt động (cold start request đầu tiên chậm) |
+| Deploy Backend | Render Docker | API web có thể dùng free compute; Celery Background Worker trên Render cần paid compute. Nếu bắt buộc 0đ, phải chọn worker host/kiến trúc async khác và benchmark lại độ tin cậy |
 | Deploy Frontend | Vercel | Deploy Next.js từ GitHub, có HTTPS; public environment variables được cấu hình ở hosting provider |
 
 > **Lưu ý:**
 > - Rate limit/điều khoản free tier của Gemini có thể thay đổi theo thời gian — kiểm tra lại trên Google AI Studio trước khi build.
 > - Project Supabase free tier sẽ **tạm dừng sau 7 ngày không hoạt động** (dữ liệu không mất, chỉ cần kích hoạt lại).
-> - Backend Render free tier có thể spin down khi không có traffic; không dùng process FastAPI làm cron/scheduler đáng tin cậy và cần ghi rõ cold start trong README.
+> - Render free web service có thể spin down khi không có traffic. Background Worker không có free compute, nên không gộp Celery vào FastAPI chỉ để né chi phí nếu chưa chấp nhận rủi ro mất job/cold start.
 
 ---
 
