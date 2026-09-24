@@ -440,8 +440,9 @@ Full API reference is available through Swagger in non-production mode.
 
 ## Production deployment
 
-Backend production is deployed on Railway:
+Production is deployed on Railway:
 
+- Web: `https://rag-tutor-web-production.up.railway.app`
 - API: `https://rag-tutor-api-production.up.railway.app`
 - Health: `/health`
 - Readiness: `/health/ready`
@@ -450,4 +451,4 @@ Backend production is deployed on Railway:
 
 The Railway API deployment is validated with `/health/ready`, which checks both Supabase and Redis connectivity. The Celery worker is connected to `redis.railway.internal` and reports ready.
 
-The frontend production service is deployed separately from the `frontend/` Dockerfile. See `DEPLOYMENT.md` and `RELEASE_CHECKLIST.md` for the latest release state.
+The frontend runs from the `frontend/` Dockerfile and talks to the Railway API over HTTPS. See `DEPLOYMENT.md` and `RELEASE_CHECKLIST.md` for the latest release state.
