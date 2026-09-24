@@ -466,3 +466,115 @@ export async function updateAnnotation(
 export async function deleteAnnotation(annotationId: string) {
   await api.delete(\`/annotations/\${annotationId}\`);
 }
+
+
+export type RoadmapTopic = {
+  id: string;
+  project_id: string;
+  name: string;
+  description: string | null;
+  difficulty: "basic" | "intermediate" | "advanced" | null;
+  bloom_level: "remember" | "understand" | "apply" | "analyze" | null;
+  is_core: boolean;
+  model_name: string | null;
+  prompt_version: string | null;
+  created_at: string;
+  order: number;
+  prerequisites: string[];
+};
+
+export type RoadmapData = {
+  project: {
+    id: string;
+    name: string;
+    target_score: number | null;
+    exam_date: string | null;
+    weekly_study_minutes: number | null;
+  };
+  topics: RoadmapTopic[];
+};
+
+export type StudySchedule = {
+  id: string;
+  project_id: string;
+  created_by: string;
+  topic_id: string | null;
+  title: string;
+  description: string | null;
+  start_time: string;
+  end_time: string | null;
+  event_type: "study" | "quiz" | "review" | "deadline";
+  source: "manual" | "ai_suggested";
+  suggestion_status: "suggested" | "accepted" | "rejected";
+  created_at: string;
+  completed_by_me?: boolean;
+  topics?: { id: string; name: string } | null;
+};
+
+export async function updateProject(
+  projectId: string,
+  payload: {
+    name: string;
+    description?: string | null;
+    target_score?: number | null;
+    exam_date?: string | null;
+    weekly_study_minutes?: number | null;
+  },
+) {
+  const { data } = await api.patch<Project>(\`/projects/\${projectId}\`, payload);
+  return data;
+}
+
+export async function getRoadmap(projectId: string) {
+  const { data } = await api.get<RoadmapData>(
+    \`/projects/\${projectId}/roadmap\`,
+  );
+  return data;
+}
+
+export async function generateRoadmap(projectId: string) {
+  const { data } = await api.post<{
+    project_id: string;
+    topics: RoadmapTopic[];
+  }>(\`/projects/\${projectId}/roadmap/generate\`);
+  return data;
+}
+
+export async function listSchedules(projectId: string) {
+  const { data } = await api.get<StudySchedule[]>(
+    \`/projects/\${projectId}/schedules\`,
+  );
+  return data;
+}
+
+export async function generateSchedules(projectId: string) {
+  const { data } = await api.post<StudySchedule[]>(
+    \`/projects/\${projectId}/schedules/generate\`,
+  );
+  return data;
+}
+
+export async function acceptSchedule(scheduleId: string) {
+  const { data } = await api.post<StudySchedule>(
+    \`/schedules/\${scheduleId}/accept\`,
+  );
+  return data;
+}
+
+export async function rejectSchedule(scheduleId: string) {
+  const { data } = await api.post<StudySchedule>(
+    \`/schedules/\${scheduleId}/reject\`,
+  );
+  return data;
+}
+
+export async function completeSchedule(scheduleId: string) {
+  const { data } = await api.post(
+    \`/schedules/\${scheduleId}/complete\`,
+  );
+  return data;
+}
+
+export async function uncompleteSchedule(scheduleId: string) {
+  await api.delete(\`/schedules/\${scheduleId}/complete\`);
+}
