@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from time import perf_counter
+from uuid import uuid4
 
 import structlog
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -41,6 +43,36 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def request_logging_middleware(request: Request, call_next):
+        request_id = request.headers.get("X-Request-ID") or str(uuid4())
+        request.state.request_id = request_id
+        started = perf_counter()
+
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            logger.exception(
+                "request_failed",
+                request_id=request_id,
+                method=request.method,
+                path=request.url.path,
+                error=exc.__class__.__name__,
+            )
+            raise
+
+        duration_ms = round((perf_counter() - started) * 1000, 2)
+        response.headers["X-Request-ID"] = request_id
+        logger.info(
+            "request_complete",
+            request_id=request_id,
+            method=request.method,
+            path=request.url.path,
+            status_code=response.status_code,
+            duration_ms=duration_ms,
+        )
+        return response
 
     app.include_router(api_router, prefix="/api/v1")
 
