@@ -85,6 +85,25 @@ Yêu cầu:
 
         return interaction.output_text
 
+    def stream_generate_answer(self, question: str, context: str):
+        """Yield text deltas from Gemini Interactions streaming."""
+        prompt = self.build_prompt(question=question, context=context)
+        stream = self.gemini_client.interactions.create(
+            model=self.gemini_model,
+            input=prompt,
+            stream=True,
+        )
+
+        for event in stream:
+            if getattr(event, "event_type", None) != "step.delta":
+                continue
+            delta = getattr(event, "delta", None)
+            if getattr(delta, "type", None) != "text":
+                continue
+            text = getattr(delta, "text", None)
+            if text:
+                yield text
+
     def build_sources(self, results: list[dict]) -> list[dict]:
         sources: list[dict] = []
         seen: set[tuple] = set()
