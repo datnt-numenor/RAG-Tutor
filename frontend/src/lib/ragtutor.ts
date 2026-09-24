@@ -59,6 +59,7 @@ export type Citation = {
   source_file?: string;
   page?: number | null;
   similarity?: number;
+  source_deleted?: boolean;
 };
 
 export type ChatMessage = {
