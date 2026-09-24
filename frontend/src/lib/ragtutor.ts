@@ -785,3 +785,32 @@ export async function streamChatMessage(
   const finalBlock = buffer.trim();
   if (finalBlock) processBlock(finalBlock);
 }
+
+
+export type ProjectMember = {
+  id: string;
+  project_id: string;
+  user_id: string;
+  role: "owner" | "member";
+  joined_at: string;
+  users?: {
+    id: string;
+    full_name: string | null;
+    email: string;
+    avatar_url: string | null;
+  } | null;
+};
+
+export async function listProjectMembers(projectId: string) {
+  const { data } = await api.get<ProjectMember[]>(
+    `/projects/${projectId}/members`,
+  );
+  return data;
+}
+
+export async function removeProjectMember(
+  projectId: string,
+  userId: string,
+) {
+  await api.delete(`/projects/${projectId}/members/${userId}`);
+}
