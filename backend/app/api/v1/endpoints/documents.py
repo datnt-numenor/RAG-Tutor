@@ -151,6 +151,17 @@ async def delete_document(
     db = get_supabase_admin()
     _assert_owner(db, str(project_id), current_user.user_id)
 
+    document = (
+        db.table("documents")
+        .select("id")
+        .eq("id", str(document_id))
+        .eq("project_id", str(project_id))
+        .maybe_single()
+        .execute()
+    )
+    if not document.data:
+        raise HTTPException(status_code=404, detail="Document not found")
+
     # Check for existing delete job
     existing = (
         db.table("document_jobs")
@@ -168,7 +179,7 @@ async def delete_document(
     db.table("documents").update({
         "status": "deleting",
         "active_version_id": None,
-    }).eq("id", str(document_id)).execute()
+    }).eq("id", str(document_id)).eq("project_id", str(project_id)).execute()
 
     # Create delete job
     job_res = db.table("document_jobs").insert({
