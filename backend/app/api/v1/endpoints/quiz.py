@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 from typing import Annotated
 from uuid import UUID, uuid4
 
+import structlog
+
 from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
@@ -16,6 +18,7 @@ from app.core.rate_limit import enforce_ai_rate_limit
 from app.services.progress_service import get_progress_service
 
 router = APIRouter()
+logger = structlog.get_logger()
 
 
 class GenerateQuizRequest(BaseModel):
@@ -127,7 +130,15 @@ async def generate_quiz(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=502, detail="Quiz generation failed") from exc
+        logger.exception(
+            "quiz_generation_failed",
+            project_id=str(project_id),
+            error=exc.__class__.__name__,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=f"Quiz generation failed: {exc.__class__.__name__}",
+        ) from exc
 
     ids = [q["id"] for q in questions]
     max_score = sum(float(q.get("max_score") or 0) for q in questions)
