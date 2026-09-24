@@ -436,3 +436,18 @@ Full API reference is available through Swagger in non-production mode.
 - run the fixed RAG benchmark and record real metrics;
 - enable production Supabase Auth email confirmation and leaked-password protection where available;
 - deploy API/worker/frontend and run post-deploy smoke tests.
+
+
+## Production deployment
+
+Backend production is deployed on Railway:
+
+- API: `https://rag-tutor-api-production.up.railway.app`
+- Health: `/health`
+- Readiness: `/health/ready`
+- Celery worker: Railway private service
+- Redis: Railway private service
+
+The Railway API deployment is validated with `/health/ready`, which checks both Supabase and Redis connectivity. The Celery worker is connected to `redis.railway.internal` and reports ready.
+
+The frontend production service is deployed separately from the `frontend/` Dockerfile. See `DEPLOYMENT.md` and `RELEASE_CHECKLIST.md` for the latest release state.
