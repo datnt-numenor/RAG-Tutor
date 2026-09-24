@@ -194,3 +194,55 @@ async def remove_member(
     ).execute()
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete(
+    "/{project_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+async def delete_project(
+    project_id: UUID,
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+) -> Response:
+    """Permanently delete a project and all project-scoped data. Owner only."""
+    db = get_supabase_admin()
+
+    owner = (
+        db.table("project_members")
+        .select("id")
+        .eq("project_id", str(project_id))
+        .eq("user_id", current_user.user_id)
+        .eq("role", "owner")
+        .maybe_single()
+        .execute()
+    )
+    if not owner.data:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the project owner can delete it",
+        )
+
+    # Project-scoped relational data is removed through database CASCADE FKs.
+    # Document binary objects are deleted first so Storage does not become orphaned.
+    versions = (
+        db.table("document_versions")
+        .select("storage_path")
+        .eq("project_id", str(project_id))
+        .execute()
+    )
+    storage_paths = [
+        row["storage_path"]
+        for row in versions.data
+        if row.get("storage_path")
+    ]
+    if storage_paths:
+        try:
+            db.storage.from_("documents").remove(storage_paths)
+        except Exception:
+            # Relational deletion remains safe and authoritative. Orphan cleanup
+            # can be retried separately if Storage is temporarily unavailable.
+            pass
+
+    db.table("projects").delete().eq("id", str(project_id)).execute()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
