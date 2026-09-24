@@ -9,6 +9,7 @@ from starlette.concurrency import run_in_threadpool
 from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.database import get_supabase_admin
 from app.services.topic_roadmap_service import get_topic_roadmap_service
+from app.core.rate_limit import enforce_ai_rate_limit
 
 router = APIRouter()
 
@@ -62,6 +63,12 @@ async def generate_roadmap(
 ) -> dict:
     db = get_supabase_admin()
     _assert_owner(db, str(project_id), current_user.user_id)
+    await enforce_ai_rate_limit(
+        current_user.user_id,
+        bucket="roadmap-generate",
+        limit=5,
+        window_seconds=300,
+    )
 
     service = get_topic_roadmap_service()
     try:
