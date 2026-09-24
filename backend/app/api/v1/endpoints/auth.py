@@ -23,8 +23,9 @@ class SignInRequest(BaseModel):
 
 
 class TokenResponse(BaseModel):
-    access_token: str
+    access_token: str | None = None
     token_type: str = "bearer"
+    requires_email_confirmation: bool = False
 
 
 @router.post("/signup", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
@@ -32,16 +33,29 @@ async def sign_up(body: SignUpRequest) -> TokenResponse:
     """Register a new user via Supabase Auth."""
     client = get_supabase_anon()
     try:
-        res = client.auth.sign_up(
-            {"email": body.email, "password": body.password}
-        )
+        sign_up_payload = {
+            "email": body.email,
+            "password": body.password,
+            "options": {
+                "data": {
+                    "full_name": body.full_name,
+                }
+            },
+        }
+        res = client.auth.sign_up(sign_up_payload)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if res.user is None:
         raise HTTPException(status_code=400, detail="Sign-up failed")
 
-    return TokenResponse(access_token=res.session.access_token)  # type: ignore[union-attr]
+    if res.session is None:
+        return TokenResponse(
+            access_token=None,
+            requires_email_confirmation=True,
+        )
+
+    return TokenResponse(access_token=res.session.access_token)
 
 
 @router.post("/signin", response_model=TokenResponse)
