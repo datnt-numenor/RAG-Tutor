@@ -421,14 +421,16 @@ async def answer_question(
         feedback = graded["feedback"]
         grading_method = graded["grading_method"]
 
-    existing = (
+    existing_rows = (
         db.table("quiz_attempts")
         .select("id")
         .eq("quiz_session_id", str(session_id))
         .eq("question_id", str(question_id))
-        .maybe_single()
+        .eq("user_id", current_user.user_id)
+        .limit(1)
         .execute()
-    )
+    ).data or []
+    existing = existing_rows[0] if existing_rows else None
 
     payload = {
         "quiz_session_id": str(session_id),
@@ -450,11 +452,11 @@ async def answer_question(
         "graded_at": now,
     }
 
-    if existing.data:
+    if existing:
         attempt = (
             db.table("quiz_attempts")
             .update(payload)
-            .eq("id", existing.data["id"])
+            .eq("id", existing["id"])
             .execute()
         ).data[0]
     else:
@@ -650,15 +652,16 @@ async def upload_essay_scan(
         db.storage.from_("quiz-submissions").remove([storage_path])
         raise HTTPException(status_code=502, detail="OCR failed") from exc
 
-    existing = (
+    existing_rows = (
         db.table("quiz_attempts")
         .select("id, image_storage_path")
         .eq("quiz_session_id", session_id_str)
         .eq("question_id", question_id_str)
         .eq("user_id", current_user.user_id)
-        .maybe_single()
+        .limit(1)
         .execute()
-    )
+    ).data or []
+    existing = existing_rows[0] if existing_rows else None
 
     now = datetime.now(timezone.utc).isoformat()
     payload = {
@@ -689,12 +692,12 @@ async def upload_essay_scan(
     }
 
     old_path = None
-    if existing.data:
-        old_path = existing.data.get("image_storage_path")
+    if existing:
+        old_path = existing.get("image_storage_path")
         attempt = (
             db.table("quiz_attempts")
             .update(payload)
-            .eq("id", existing.data["id"])
+            .eq("id", existing["id"])
             .execute()
         ).data[0]
     else:
