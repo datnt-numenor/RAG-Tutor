@@ -190,3 +190,89 @@ export async function deleteDocument(projectId: string, documentId: string) {
   );
   return data;
 }
+
+
+export type QuizQuestion = {
+  id: string;
+  project_id: string;
+  question_type: "mcq" | "essay";
+  question_text: string;
+  options: string[] | null;
+  correct_answer: string | null;
+  model_answer: string | null;
+  key_points: string[] | null;
+  max_score: number;
+  model_name: string | null;
+  prompt_version: string | null;
+};
+
+export type QuizSession = {
+  id: string;
+  project_id: string;
+  user_id: string;
+  status: "in_progress" | "submitted" | "graded" | "abandoned";
+  question_ids: string[];
+  total_score: number | null;
+  max_score: number | null;
+  started_at: string;
+  submitted_at: string | null;
+  graded_at: string | null;
+};
+
+export type QuizAttempt = {
+  id: string;
+  quiz_session_id: string;
+  question_id: string | null;
+  user_answer: string | null;
+  score: number | null;
+  is_correct: boolean | null;
+  feedback: string | null;
+  status: string;
+};
+
+export async function generateQuiz(
+  projectId: string,
+  payload: { count: number; question_type: "mcq" | "essay" },
+) {
+  const { data } = await api.post<{
+    session: QuizSession;
+    questions: QuizQuestion[];
+  }>(\`/projects/\${projectId}/quiz/generate\`, payload);
+  return data;
+}
+
+export async function listQuizSessions(projectId: string) {
+  const { data } = await api.get<QuizSession[]>(
+    \`/projects/\${projectId}/quiz/sessions\`,
+  );
+  return data;
+}
+
+export async function getQuizSession(projectId: string, sessionId: string) {
+  const { data } = await api.get<{
+    session: QuizSession;
+    questions: QuizQuestion[];
+    attempts: QuizAttempt[];
+  }>(\`/projects/\${projectId}/quiz/sessions/\${sessionId}\`);
+  return data;
+}
+
+export async function answerQuizQuestion(
+  projectId: string,
+  sessionId: string,
+  questionId: string,
+  answer: string,
+) {
+  const { data } = await api.post<QuizAttempt>(
+    \`/projects/\${projectId}/quiz/sessions/\${sessionId}/questions/\${questionId}/answer\`,
+    { answer },
+  );
+  return data;
+}
+
+export async function submitQuiz(projectId: string, sessionId: string) {
+  const { data } = await api.post<QuizSession>(
+    \`/projects/\${projectId}/quiz/sessions/\${sessionId}/submit\`,
+  );
+  return data;
+}
