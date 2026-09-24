@@ -17,17 +17,19 @@ async def get_job(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> dict:
     db = get_supabase_admin()
-    res = db.table("document_jobs").select("*, document_versions(project_id)").eq("id", str(job_id)).maybe_single().execute()
+    res = (
+        db.table("document_jobs")
+        .select("*")
+        .eq("id", str(job_id))
+        .maybe_single()
+        .execute()
+    )
     if not res.data:
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    version = res.data.get("document_versions")
-    if not version:
         raise HTTPException(status_code=404, detail="Job not found")
 
     member = (
         db.table("project_members").select("id")
-        .eq("project_id", version["project_id"])
+        .eq("project_id", res.data["project_id"])
         .eq("user_id", current_user.user_id)
         .maybe_single().execute()
     )
@@ -43,17 +45,19 @@ async def retry_job(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> dict:
     db = get_supabase_admin()
-    job = db.table("document_jobs").select("*, document_versions(project_id)").eq("id", str(job_id)).maybe_single().execute()
+    job = (
+        db.table("document_jobs")
+        .select("*")
+        .eq("id", str(job_id))
+        .maybe_single()
+        .execute()
+    )
     if not job.data:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    version = job.data.get("document_versions")
-    if not version:
-        raise HTTPException(status_code=400, detail="Only ingest jobs can currently be retried")
-
     owner = (
         db.table("project_members").select("id")
-        .eq("project_id", version["project_id"])
+        .eq("project_id", job.data["project_id"])
         .eq("user_id", current_user.user_id)
         .eq("role", "owner")
         .maybe_single().execute()
