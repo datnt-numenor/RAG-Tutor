@@ -71,6 +71,9 @@ async def create_project(
     if not res.data:
         raise HTTPException(status_code=500, detail="Failed to create project")
 
+    if isinstance(res.data, list):
+        return res.data[0]
+
     return res.data
 
 
