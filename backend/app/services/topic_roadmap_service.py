@@ -5,6 +5,7 @@ import re
 from collections import defaultdict, deque
 from datetime import date, datetime, time, timedelta, timezone
 from functools import lru_cache
+from zoneinfo import ZoneInfo
 
 from google import genai
 
@@ -221,13 +222,25 @@ CONTEXT:
 
         target = float(project.get("target_score") or 80)
         weekly = int(project.get("weekly_study_minutes") or 300)
+
+        user = (
+            self.supabase.table("users")
+            .select("timezone")
+            .eq("id", user_id)
+            .single()
+            .execute()
+        ).data
+        try:
+            user_tz = ZoneInfo(user.get("timezone") or "UTC")
+        except Exception:
+            user_tz = ZoneInfo("UTC")
+
+        today = datetime.now(user_tz).date()
         exam_date_raw = project.get("exam_date")
         if exam_date_raw:
             exam = date.fromisoformat(str(exam_date_raw))
         else:
-            exam = date.today() + timedelta(days=30)
-
-        today = date.today()
+            exam = today + timedelta(days=30)
         available_days = max(1, (exam - today).days)
         depth_multiplier = 0.85 if target < 70 else 1.0 if target < 85 else 1.2 if target < 95 else 1.35
         daily_budget = max(30, min(180, round(weekly / 5)))
@@ -252,7 +265,8 @@ CONTEXT:
             if cursor_day > exam:
                 cursor_day = exam
 
-            start_dt = datetime.combine(cursor_day, time(hour=19), tzinfo=timezone.utc)
+            local_start = datetime.combine(cursor_day, time(hour=19), tzinfo=user_tz)
+            start_dt = local_start.astimezone(timezone.utc)
             end_dt = start_dt + timedelta(minutes=minutes)
 
             rows.append({
@@ -274,7 +288,11 @@ CONTEXT:
             })
             cursor_day += timedelta(days=max(1, available_days // max(1, len(topics))))
 
-        deadline_start = datetime.combine(exam, time(hour=9), tzinfo=timezone.utc)
+        deadline_start = datetime.combine(
+            exam,
+            time(hour=9),
+            tzinfo=user_tz,
+        ).astimezone(timezone.utc)
         rows.append({
             "project_id": project_id,
             "created_by": user_id,
