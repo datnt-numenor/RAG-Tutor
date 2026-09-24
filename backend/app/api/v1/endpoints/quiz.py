@@ -13,6 +13,7 @@ from app.core.database import get_supabase_admin
 from app.services.quiz_service import get_quiz_service
 from app.services.ocr_service import get_ocr_service
 from app.core.rate_limit import enforce_ai_rate_limit
+from app.services.progress_service import get_progress_service
 
 router = APIRouter()
 
@@ -341,6 +342,15 @@ async def answer_question(
         str(question_id),
         score_ratio,
     )
+    await run_in_threadpool(
+        get_progress_service().record_event,
+        user_id=current_user.user_id,
+        project_id=str(project_id),
+        topic_id=question.get("topic_id"),
+        event_type="quiz_answer",
+        source_id=attempt["id"],
+        idempotency_key=f"quiz_attempt:{attempt['id']}:graded",
+    )
 
     return attempt
 
@@ -646,6 +656,15 @@ async def confirm_essay_scan(
         attempt.data["project_id"],
         attempt.data["question_id"],
         score_ratio,
+    )
+    await run_in_threadpool(
+        get_progress_service().record_event,
+        user_id=current_user.user_id,
+        project_id=attempt.data["project_id"],
+        topic_id=question.data.get("topic_id"),
+        event_type="quiz_answer",
+        source_id=updated["id"],
+        idempotency_key=f"quiz_attempt:{updated['id']}:graded",
     )
 
     return updated
