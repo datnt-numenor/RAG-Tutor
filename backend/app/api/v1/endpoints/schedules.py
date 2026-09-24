@@ -10,6 +10,7 @@ from starlette.concurrency import run_in_threadpool
 from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.database import get_supabase_admin
 from app.services.topic_roadmap_service import get_topic_roadmap_service
+from app.services.progress_service import get_progress_service
 
 router = APIRouter()
 
@@ -123,7 +124,7 @@ async def reject_schedule(
     db = get_supabase_admin()
     schedule = (
         db.table("schedules")
-        .select("id, project_id")
+        .select("id, project_id, topic_id, start_time, end_time")
         .eq("id", str(schedule_id))
         .maybe_single()
         .execute()
@@ -162,15 +163,43 @@ async def complete_schedule(
 
     _membership(db, schedule.data["project_id"], current_user.user_id)
 
+    completed_at = datetime.now(timezone.utc)
     result = (
         db.table("schedule_completions")
         .upsert({
             "schedule_id": str(schedule_id),
             "user_id": current_user.user_id,
-            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "completed_at": completed_at.isoformat(),
         }, on_conflict="schedule_id,user_id")
         .execute()
     )
+
+    duration_seconds = None
+    if schedule.data.get("end_time"):
+        start_value = datetime.fromisoformat(
+            schedule.data["start_time"].replace("Z", "+00:00")
+        )
+        end_value = datetime.fromisoformat(
+            schedule.data["end_time"].replace("Z", "+00:00")
+        )
+        duration_seconds = max(
+            0,
+            int((end_value - start_value).total_seconds()),
+        )
+
+    await run_in_threadpool(
+        get_progress_service().record_event,
+        user_id=current_user.user_id,
+        project_id=schedule.data["project_id"],
+        topic_id=schedule.data.get("topic_id"),
+        event_type="schedule_completed",
+        source_id=str(schedule_id),
+        duration_seconds=duration_seconds,
+        idempotency_key=(
+            f"schedule_completion:{schedule_id}:{current_user.user_id}"
+        ),
+    )
+
     return result.data[0]
 
 
@@ -201,5 +230,13 @@ async def uncomplete_schedule(
     ).eq(
         "user_id", current_user.user_id
     ).execute()
+
+    await run_in_threadpool(
+        get_progress_service().remove_event,
+        user_id=current_user.user_id,
+        idempotency_key=(
+            f"schedule_completion:{schedule_id}:{current_user.user_id}"
+        ),
+    )
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
