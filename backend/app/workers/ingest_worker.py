@@ -5,7 +5,7 @@ from app.services.ingest_service import IngestService
 from app.workers.celery_app import celery_app
 
 
-@celery_app.task(bind=True, max_retries=3, name="workers.ingest_document")
+@celery_app.task(bind=True, max_retries=2, name="workers.ingest_document")
 def ingest_document(self, document_id: str, version_id: str, job_id: str) -> None:
     try:
         IngestService().run(
