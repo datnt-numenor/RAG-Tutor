@@ -41,9 +41,10 @@ Requires real Redis, Celery, Gemini and app environment variables.
 - [x] Provision production Redis on Railway (`RAGTutor` project).
 - [x] Railway worker connected to private Redis (`redis.railway.internal:6379/0`) and Celery reports ready.
 - [x] Railway public API domain created: `https://rag-tutor-api-production.up.railway.app`.
+- [x] Frontend production origin configured in API CORS: `https://rag-tutor-web-production.up.railway.app`.
 - [x] Railway API and Celery services deployed from `main`; API, worker and Redis are online.
 - [x] API readiness healthcheck `/health/ready` passes on Railway, verifying Supabase + Redis connectivity.
-- [ ] Frontend deployment: Railway service `rag-tutor-web` is building from `/frontend`; Vercel connector remains optional/follow-up.
+- [x] Frontend deployed on Railway from `/frontend`: `https://rag-tutor-web-production.up.railway.app`. Vercel remains optional/follow-up.
 - [ ] Configure production CORS and public frontend environment variables.
 - [ ] Run post-deploy smoke tests.
 - [ ] Record cold-start and RAG latency measurements.
