@@ -377,6 +377,10 @@ export type DocumentVersionDetail = {
   file_size: number;
   page_count: number | null;
   status: string;
+  summary: string | null;
+  summary_status: string | null;
+  embedding_model: string | null;
+  chunker_version: string | null;
   created_at: string;
   processed_at: string | null;
 };
