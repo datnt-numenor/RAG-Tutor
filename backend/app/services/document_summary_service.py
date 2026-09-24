@@ -81,5 +81,5 @@ def get_document_summary_service() -> DocumentSummaryService:
     settings = get_settings()
     return DocumentSummaryService(
         api_key=settings.gemini_api_key,
-        model=settings.gemini_model,
+        model=settings.gemini_aux_model,
     )
