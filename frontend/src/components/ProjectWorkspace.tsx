@@ -24,10 +24,11 @@ import {
   listMessages,
   listProjectJobs,
   retryJob,
-  sendMessage,
+  streamChatMessage,
   uploadDocument,
   uploadDocumentVersion,
   deleteDocument,
+  type Citation,
 } from "@/lib/ragtutor";
 
 export function ProjectWorkspace({ projectId }: { projectId: string }) {
@@ -36,6 +37,9 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
   const [versionFiles, setVersionFiles] = useState<Record<string, File | null>>({});
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
+  const [pendingQuestion, setPendingQuestion] = useState("");
+  const [streamingText, setStreamingText] = useState("");
+  const [streamingSources, setStreamingSources] = useState<Citation[]>([]);
 
   const project = useQuery({
     queryKey: ["project", projectId],
@@ -102,14 +106,38 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
         sessionId = session.id;
         setActiveSessionId(session.id);
       }
-      return sendMessage(projectId, sessionId, content);
+
+      setPendingQuestion(content);
+      setStreamingText("");
+      setStreamingSources([]);
+
+      await streamChatMessage(
+        projectId,
+        sessionId,
+        content,
+        (event) => {
+          if (event.type === "meta") {
+            setStreamingSources(event.payload.sources ?? []);
+          } else if (event.type === "token") {
+            setStreamingText((current) => current + event.payload.text);
+          } else if (event.type === "error") {
+            throw new Error(event.payload.message);
+          }
+        },
+      );
     },
     onSuccess: async () => {
       setMessage("");
+      setPendingQuestion("");
+      setStreamingText("");
+      setStreamingSources([]);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["messages", projectId] }),
         queryClient.invalidateQueries({ queryKey: ["chat-sessions", projectId] }),
       ]);
+    },
+    onError: () => {
+      setStreamingText("");
     },
   });
 
@@ -442,11 +470,45 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
               </div>
             )}
 
-            {send.isPending && (
-              <div className="flex items-center gap-2 text-sm text-[#8a7b70]">
-                <Loader2 size={16} className="animate-spin" />
-                RAG đang retrieve context và gọi Gemini...
-              </div>
+            {send.isPending && pendingQuestion && (
+              <>
+                <div className="ml-auto max-w-[85%]">
+                  <div className="rounded-2xl bg-[#f0d7cb] px-4 py-3 text-sm leading-6 text-[#4d382e]">
+                    {pendingQuestion}
+                  </div>
+                </div>
+
+                <div className="mr-auto max-w-[94%]">
+                  <div className="rounded-2xl border border-[#755640]/10 bg-white/72 px-4 py-3 text-sm leading-6">
+                    {streamingText ? (
+                      streamingText
+                    ) : (
+                      <span className="inline-flex items-center gap-2 text-[#8a7b70]">
+                        <Loader2 size={16} className="animate-spin" />
+                        RAG đang retrieve context...
+                      </span>
+                    )}
+                  </div>
+
+                  {streamingSources.length > 0 && (
+                    <div className="mt-2 space-y-2">
+                      {streamingSources.map((source, index) => (
+                        <div
+                          key={index}
+                          className="rounded-xl border border-[#755640]/10 bg-[#fff9f2] p-3 text-xs"
+                        >
+                          <div className="font-semibold">
+                            {index + 1}. {source.source_file || "Document"}
+                          </div>
+                          <div className="mt-1 text-[#8a7b70]">
+                            {source.page ? "Page " + source.page : "Page unknown"}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </>
             )}
           </div>
 
