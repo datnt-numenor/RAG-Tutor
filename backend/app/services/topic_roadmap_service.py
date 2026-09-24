@@ -11,6 +11,7 @@ from google import genai
 
 from app.core.config import get_settings
 from app.core.database import get_supabase_admin
+from app.services.chunk_sampling_service import balanced_active_chunks
 
 
 class TopicRoadmapService:
@@ -25,25 +26,11 @@ class TopicRoadmapService:
         return json.loads(clean)
 
     def _active_chunks(self, project_id: str, limit: int = 24) -> list[dict]:
-        response = (
-            self.supabase.table("chunks")
-            .select(
-                "id, content, page_number, document_id, document_version_id, "
-                "document_versions!inner(original_filename, status), "
-                "documents!inner(active_version_id, status)"
-            )
-            .eq("project_id", project_id)
-            .eq("documents.status", "active")
-            .eq("document_versions.status", "ready")
-            .limit(limit)
-            .execute()
+        return balanced_active_chunks(
+            self.supabase,
+            project_id,
+            limit,
         )
-        rows = []
-        for row in response.data or []:
-            doc = row.get("documents") or {}
-            if doc.get("active_version_id") == row.get("document_version_id"):
-                rows.append(row)
-        return rows
 
     def generate_topics(self, project_id: str) -> list[dict]:
         chunks = self._active_chunks(project_id)
