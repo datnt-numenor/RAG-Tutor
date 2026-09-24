@@ -9,7 +9,7 @@ RAGTutor is code-complete enough for release validation. Production deployment i
 - Railway Redis: provisioned and healthy.
 - Railway API service: created and preconfigured, source not attached yet.
 - Railway Celery worker: created and preconfigured, source not attached yet.
-- Vercel connector: connected; frontend deployment waits for the production API URL.
+- Frontend production is running on Railway. Vercel remains an optional migration target.
 
 ## Private secrets still required
 
@@ -79,3 +79,11 @@ After the private values are set:
    - `NEXT_PUBLIC_SUPABASE_URL=https://xlreazpjvcudvbslrzdw.supabase.co`
    - `NEXT_PUBLIC_SUPABASE_ANON_KEY=<publishable-key>`
 6. Run post-deploy smoke tests.
+
+
+## Current live URLs
+
+- Web: `https://rag-tutor-web-production.up.railway.app`
+- API: `https://rag-tutor-api-production.up.railway.app`
+
+The web service is built from `/frontend/Dockerfile`. The API uses `/health/ready` so Railway only marks it healthy when both Supabase and Redis are reachable.
