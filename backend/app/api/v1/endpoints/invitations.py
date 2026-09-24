@@ -10,6 +10,7 @@ from pydantic import BaseModel, EmailStr
 
 from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.database import get_supabase_admin
+from app.core.config import get_settings
 
 router = APIRouter()
 
@@ -174,6 +175,24 @@ async def accept_invitation(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> dict:
     db = get_supabase_admin()
+    settings = get_settings()
+
+    if settings.is_production:
+        try:
+            auth_user = db.auth.admin.get_user_by_id(current_user.user_id)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Could not verify account email status",
+            ) from exc
+
+        user_record = getattr(auth_user, "user", None)
+        if not user_record or not getattr(user_record, "email_confirmed_at", None):
+            raise HTTPException(
+                status_code=403,
+                detail="Verified email is required to accept an invitation",
+            )
+
     res = db.rpc("accept_project_invitation", {
         "p_raw_token": raw_token,
         "p_user_id": current_user.user_id,
