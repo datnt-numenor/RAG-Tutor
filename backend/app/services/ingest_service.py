@@ -14,8 +14,12 @@ from app.services.embedding_service import EmbeddingService
 class IngestService:
     def __init__(self, supabase=None):
         self.supabase = supabase or get_supabase_admin()
-        self.chunking_service = ChunkingService()
         self.embedding_service = EmbeddingService()
+        self.chunking_service = ChunkingService(
+            token_counter=self.embedding_service.count_tokens,
+            model_max_tokens=self.embedding_service.max_seq_length,
+            overlap_sentences=1,
+        )
 
     def _extract_pages(self, content: bytes, mime_type: str) -> list[dict]:
         if mime_type == "application/pdf":
@@ -70,12 +74,10 @@ class IngestService:
                     "content": chunk["content"],
                     "embedding": embedding,
                     "page_number": chunk["page_number"],
+                    "section_title": chunk.get("section_title"),
                     "chunk_index": chunk["chunk_index"],
-                    "source_spans": [
-                        {
-                            "page_number": chunk["page_number"],
-                        }
-                    ],
+                    "source_spans": chunk.get("source_spans"),
+                    "token_count": chunk.get("token_count"),
                 }
             )
 
@@ -198,7 +200,7 @@ class IngestService:
                     "status": "ready",
                     "page_count": len(pages),
                     "embedding_model": self.embedding_service.model_name,
-                    "chunker_version": "sentence-overlap-v1",
+                    "chunker_version": self.chunking_service.VERSION,
                     "processed_at": processed_at,
                 }
             ).eq("id", version_id).execute()
