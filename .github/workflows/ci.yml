@@ -65,6 +65,7 @@ jobs:
       - name: Test security dependency upgrades
         run: |
           npm install next@16.3.6 eslint-config-next@16.3.6 pdfjs-dist@6.3.289
+          npm audit fix
           echo "__PACKAGE_JSON_B64__"
           base64 -w0 package.json
           echo
