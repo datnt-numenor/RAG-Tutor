@@ -407,7 +407,14 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
                             {index + 1}
                           </span>
                           <div>
-                            <div className="font-semibold">{source.source_file || "Document"}</div>
+                            <div className="font-semibold">
+                              {source.source_file || "Document"}
+                              {source.source_deleted && (
+                                <span className="ml-2 rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-600">
+                                  source deleted
+                                </span>
+                              )}
+                            </div>
                             <div className="mt-1 text-[#8a7b70]">
                               {source.page ? `Page ${source.page}` : "Page unknown"}
                               {typeof source.similarity === "number"
