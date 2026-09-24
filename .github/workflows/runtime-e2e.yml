@@ -2,6 +2,10 @@ name: Runtime E2E
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/runtime-e2e-trigger"
 
 concurrency:
   group: ragtutor-runtime-e2e
