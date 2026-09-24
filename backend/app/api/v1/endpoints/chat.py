@@ -10,6 +10,7 @@ from starlette.concurrency import run_in_threadpool
 from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.database import get_supabase_admin
 from app.services.rag_service import get_rag_service
+from app.core.rate_limit import enforce_ai_rate_limit
 
 router = APIRouter()
 
@@ -98,6 +99,12 @@ async def send_message(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> dict:
     db = get_supabase_admin()
+    await enforce_ai_rate_limit(
+        current_user.user_id,
+        bucket="chat",
+        limit=30,
+        window_seconds=60,
+    )
 
     session = (
         db.table("chat_sessions")
