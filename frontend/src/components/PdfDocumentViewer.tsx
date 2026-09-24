@@ -237,6 +237,7 @@ export function PdfDocumentViewer({
           : undefined;
 
       renderTask = page.render({
+        canvas,
         canvasContext: context,
         viewport,
         transform,
