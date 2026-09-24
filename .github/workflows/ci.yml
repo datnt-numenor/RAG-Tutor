@@ -7,7 +7,6 @@ on:
 
 jobs:
   backend:
-    if: false
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -61,19 +60,6 @@ jobs:
 
       - name: Install frontend dependencies
         run: npm ci
-
-      - name: Test security dependency upgrades
-        run: |
-          npm install next@16.3.6 eslint-config-next@16.3.6 pdfjs-dist@6.3.289
-          npm audit fix
-          echo "__PACKAGE_JSON_B64__"
-          base64 -w0 package.json
-          echo
-          echo "__PACKAGE_LOCK_B64__"
-          base64 -w0 package-lock.json
-          echo
-          echo "__AUDIT_AFTER__"
-          npm audit --json || true
 
       - name: Lint frontend
         run: npm run lint
