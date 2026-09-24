@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, Field
 
 from app.core.auth import AuthenticatedUser, get_current_user
@@ -152,12 +152,12 @@ async def list_members(
     return res.data
 
 
-@router.delete("/{project_id}/members/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{project_id}/members/{user_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
 async def remove_member(
     project_id: UUID,
     user_id: UUID,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
-) -> None:
+) -> Response:
     """Remove a member from the project. Owner cannot be removed."""
     db = get_supabase_admin()
     owner_check = (
@@ -187,3 +187,5 @@ async def remove_member(
     db.table("project_members").delete().eq("project_id", str(project_id)).eq(
         "user_id", str(user_id)
     ).execute()
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
