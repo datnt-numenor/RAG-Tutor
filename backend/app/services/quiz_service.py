@@ -415,5 +415,5 @@ def get_quiz_service() -> QuizService:
     return QuizService(
         supabase=get_supabase_admin(),
         gemini_api_key=settings.gemini_api_key,
-        gemini_model=settings.gemini_model,
+        gemini_model=settings.gemini_aux_model,
     )
