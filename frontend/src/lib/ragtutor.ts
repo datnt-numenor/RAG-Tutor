@@ -623,3 +623,14 @@ export async function getEssayScanSignedUrl(attemptId: string) {
 export async function deleteEssayScan(attemptId: string) {
   await api.delete(`/quiz-attempts/${attemptId}/scan`);
 }
+
+export async function startQuizFromBank(
+  projectId: string,
+  payload: { count: number; question_type?: "mcq" | "essay" | null },
+) {
+  const { data } = await api.post<{
+    session: QuizSession;
+    questions: QuizQuestion[];
+  }>(`/projects/${projectId}/quiz/start`, payload);
+  return data;
+}
