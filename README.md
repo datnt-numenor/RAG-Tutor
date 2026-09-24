@@ -99,10 +99,10 @@ Permanent delete immediately removes the document from retrieval, then asynchron
 - Signed URL to private document version.
 - PDF.js viewer with page navigation and zoom.
 - Rectangle highlight coordinates normalized to `0..1`.
+- PDF.js text layer supports direct text selection/highlight.
+- Text selection is stored as one or more normalized rectangles, so highlight placement survives zoom/resize.
 - Color + note CRUD.
 - Annotation belongs to one user and one immutable document version.
-
-Current limitation: rectangle annotations are implemented; full PDF text-layer selection/highlight still needs final refinement.
 
 ### Roadmap & schedules
 
@@ -149,7 +149,11 @@ The system never grades OCR text before user confirmation. The image can later b
 
 ### Progress
 
-The current dashboard aggregates actual project/document/chat/quiz/review data. A rebuildable event/snapshot pipeline is planned as the final progress hardening step.
+- Dashboard aggregates actual project/document/chat/quiz/review data.
+- `study_events` stores idempotent activity events.
+- `progress_snapshots` stores rebuildable daily aggregates per user/project.
+- Schedule completion and graded quiz attempts feed the progress pipeline.
+- Snapshot history can be rebuilt for a date range instead of trusting mutable counters.
 
 ## Security state
 
@@ -185,6 +189,7 @@ RAG-Tutor/
 │   └── Dockerfile
 ├── .github/workflows/ci.yml
 ├── docker-compose.yml
+├── render.yaml
 ├── Plan.md
 └── Database_design_plan.md
 ```
@@ -336,13 +341,18 @@ Do not claim CV metrics until they have been measured on a fixed test set.
 
 Full API reference is available through Swagger in non-production mode.
 
+## Deploy
+
+- `render.yaml` provisions the FastAPI web service and Celery worker blueprint.
+- `frontend/vercel.json` contains the Vercel Next.js build configuration.
+- Redis remains an external deployment dependency and is supplied through `REDIS_URL`.
+- Production secrets are configured in the hosting provider, never committed to Git.
+
 ## Known remaining release work
 
-- run full E2E on local machine with real Redis/Celery/PDF/Gemini;
-- finish PDF text-layer annotation selection;
-- implement rebuildable study-events/progress snapshots;
-- add multi-user integration tests using two independent accounts;
-- run RAG benchmark and record real metrics;
-- validate CI build results;
-- configure production Supabase Auth settings;
-- deploy backend/worker/frontend and run smoke tests.
+- run full E2E on a real local/deployed environment with Redis/Celery/PDF/Gemini;
+- add multi-user authorization integration tests using two independent accounts;
+- run the fixed RAG benchmark and record real metrics;
+- verify GitHub Actions after the latest frontend/backend changes;
+- enable production Supabase Auth email confirmation and leaked-password protection where available;
+- deploy API/worker/frontend and run post-deploy smoke tests.
