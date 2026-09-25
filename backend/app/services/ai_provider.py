@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 from collections.abc import Iterator
 from functools import lru_cache
 
@@ -14,6 +15,9 @@ from app.core.config import get_settings
 
 
 logger = structlog.get_logger()
+
+_GROQ_MAX_RATE_LIMIT_RETRIES = 2
+_GROQ_MAX_RETRY_DELAY_SECONDS = 60.0
 
 
 class TextGenerationProvider:
@@ -53,6 +57,48 @@ class TextGenerationProvider:
             "Content-Type": "application/json",
         }
 
+    def _groq_retry_delay(
+        self,
+        response: httpx.Response,
+        *,
+        attempt: int,
+    ) -> float | None:
+        if (
+            response.status_code != 429
+            or attempt >= _GROQ_MAX_RATE_LIMIT_RETRIES
+        ):
+            return None
+
+        retry_after = response.headers.get("retry-after")
+        try:
+            delay = float(retry_after) if retry_after is not None else 2**attempt
+        except ValueError:
+            delay = 2**attempt
+        delay = max(0.0, min(delay, _GROQ_MAX_RETRY_DELAY_SECONDS))
+        logger.warning(
+            "groq_rate_limited_retrying",
+            attempt=attempt + 1,
+            retry_after_seconds=delay,
+            model=self.groq_model,
+        )
+        return delay
+
+    def _groq_post(self, payload: dict) -> httpx.Response:
+        for attempt in range(_GROQ_MAX_RATE_LIMIT_RETRIES + 1):
+            response = httpx.post(
+                self._groq_url,
+                headers=self._groq_headers(),
+                json=payload,
+                timeout=self._timeout,
+            )
+            delay = self._groq_retry_delay(response, attempt=attempt)
+            if delay is None:
+                response.raise_for_status()
+                return response
+            response.close()
+            time.sleep(delay)
+        raise RuntimeError("Groq retry loop exhausted")
+
     def _groq_generate(self, prompt: str, *, json_mode: bool = False) -> str:
         payload: dict = {
             "model": self.groq_model,
@@ -62,13 +108,7 @@ class TextGenerationProvider:
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
 
-        response = httpx.post(
-            self._groq_url,
-            headers=self._groq_headers(),
-            json=payload,
-            timeout=self._timeout,
-        )
-        response.raise_for_status()
+        response = self._groq_post(payload)
         text = response.json()["choices"][0]["message"]["content"]
         if not text or not str(text).strip():
             raise ValueError("Groq returned empty text")
@@ -103,24 +143,33 @@ class TextGenerationProvider:
             "temperature": 0.2,
             "stream": True,
         }
-        with httpx.stream(
-            "POST",
-            self._groq_url,
-            headers=self._groq_headers(),
-            json=payload,
-            timeout=self._timeout,
-        ) as response:
-            response.raise_for_status()
-            for line in response.iter_lines():
-                if not line.startswith("data: "):
-                    continue
-                data = line[6:]
-                if data == "[DONE]":
-                    break
-                event = json.loads(data)
-                text = event.get("choices", [{}])[0].get("delta", {}).get("content")
-                if text:
-                    yield str(text)
+        for attempt in range(_GROQ_MAX_RATE_LIMIT_RETRIES + 1):
+            with httpx.stream(
+                "POST",
+                self._groq_url,
+                headers=self._groq_headers(),
+                json=payload,
+                timeout=self._timeout,
+            ) as response:
+                delay = self._groq_retry_delay(response, attempt=attempt)
+                if delay is None:
+                    response.raise_for_status()
+                    for line in response.iter_lines():
+                        if not line.startswith("data: "):
+                            continue
+                        data = line[6:]
+                        if data == "[DONE]":
+                            return
+                        event = json.loads(data)
+                        text = (
+                            event.get("choices", [{}])[0]
+                            .get("delta", {})
+                            .get("content")
+                        )
+                        if text:
+                            yield str(text)
+                    return
+            time.sleep(delay)
 
     def _gemini_stream(self, prompt: str) -> Iterator[str]:
         stream = self._gemini_client.interactions.create(
@@ -203,13 +252,7 @@ class TextGenerationProvider:
             if json_mode:
                 payload["response_format"] = {"type": "json_object"}
             try:
-                response = httpx.post(
-                    self._groq_url,
-                    headers=self._groq_headers(),
-                    json=payload,
-                    timeout=self._timeout,
-                )
-                response.raise_for_status()
+                response = self._groq_post(payload)
                 text = response.json()["choices"][0]["message"]["content"]
                 if text and str(text).strip():
                     return str(text)

@@ -1,3 +1,4 @@
+import httpx
 import pytest
 
 from app.services.ai_provider import TextGenerationProvider
@@ -8,7 +9,51 @@ def make_provider(*, groq: bool = True) -> TextGenerationProvider:
     provider.groq_api_key = "test-key" if groq else ""
     provider.groq_model = "groq-model"
     provider.gemini_model = "gemini-model"
+    provider._timeout = 60.0
     return provider
+
+
+def test_groq_post_retries_rate_limit_using_retry_after(monkeypatch):
+    provider = make_provider()
+    request = httpx.Request("POST", provider._groq_url)
+    responses = iter(
+        [
+            httpx.Response(429, headers={"retry-after": "0.25"}, request=request),
+            httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": "ok"}}]},
+                request=request,
+            ),
+        ]
+    )
+    sleeps: list[float] = []
+    monkeypatch.setattr(
+        "app.services.ai_provider.httpx.post",
+        lambda *a, **k: next(responses),
+    )
+    monkeypatch.setattr("app.services.ai_provider.time.sleep", sleeps.append)
+
+    response = provider._groq_post({"model": "groq-model"})
+
+    assert response.status_code == 200
+    assert sleeps == [0.25]
+
+
+def test_groq_post_stops_retrying_after_limit(monkeypatch):
+    provider = make_provider()
+    request = httpx.Request("POST", provider._groq_url)
+    monkeypatch.setattr(
+        "app.services.ai_provider.httpx.post",
+        lambda *a, **k: httpx.Response(
+            429,
+            headers={"retry-after": "0"},
+            request=request,
+        ),
+    )
+    monkeypatch.setattr("app.services.ai_provider.time.sleep", lambda _: None)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        provider._groq_post({"model": "groq-model"})
 
 
 def test_generate_uses_groq_when_configured(monkeypatch):
