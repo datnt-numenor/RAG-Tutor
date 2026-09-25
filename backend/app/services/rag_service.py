@@ -2,28 +2,22 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-import structlog
-from google import genai
-
-from app.core.config import get_settings
 from app.core.database import get_supabase_admin
+from app.services.ai_provider import TextGenerationProvider, get_text_provider
 from app.services.embedding_service import EmbeddingService
-
-
-logger = structlog.get_logger()
 
 
 class RAGService:
     def __init__(
         self,
         supabase,
-        gemini_api_key: str,
-        gemini_model: str,
+        provider: TextGenerationProvider,
     ):
         self.supabase = supabase
         self.embedding_service = EmbeddingService()
-        self.gemini_model = gemini_model
-        self.gemini_client = genai.Client(api_key=gemini_api_key)
+        self.provider = provider
+        # Kept for the existing API/database response contract.
+        self.gemini_model = provider.model_name
 
     def retrieve(
         self,
@@ -82,48 +76,12 @@ Yêu cầu:
     def generate_answer(self, question: str, context: str) -> str:
         prompt = self.build_prompt(question=question, context=context)
 
-        interaction = self.gemini_client.interactions.create(
-            model=self.gemini_model,
-            input=prompt,
-        )
-
-        return interaction.output_text
+        return self.provider.generate(prompt)
 
     def stream_generate_answer(self, question: str, context: str):
         """Yield text deltas from Gemini Interactions streaming."""
         prompt = self.build_prompt(question=question, context=context)
-        emitted_text = False
-
-        try:
-            stream = self.gemini_client.interactions.create(
-                model=self.gemini_model,
-                input=prompt,
-                stream=True,
-            )
-
-            for event in stream:
-                if getattr(event, "event_type", None) != "step.delta":
-                    continue
-                delta = getattr(event, "delta", None)
-                if getattr(delta, "type", None) != "text":
-                    continue
-                text = getattr(delta, "text", None)
-                if text:
-                    emitted_text = True
-                    yield text
-        except Exception as exc:
-            if emitted_text:
-                raise
-            logger.exception(
-                "gemini_stream_failed_before_text",
-                error_type=exc.__class__.__name__,
-            )
-
-        if not emitted_text:
-            logger.warning("gemini_stream_empty_fallback")
-            answer = self.generate_answer(question=question, context=context)
-            if answer:
-                yield answer
+        yield from self.provider.stream(prompt)
 
     def build_sources(self, results: list[dict]) -> list[dict]:
         sources: list[dict] = []
@@ -196,9 +154,7 @@ Yêu cầu:
 
 @lru_cache
 def get_rag_service() -> RAGService:
-    settings = get_settings()
     return RAGService(
         supabase=get_supabase_admin(),
-        gemini_api_key=settings.gemini_api_key,
-        gemini_model=settings.gemini_model,
+        provider=get_text_provider(),
     )

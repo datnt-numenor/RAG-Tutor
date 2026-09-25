@@ -31,7 +31,7 @@ FastAPI
 | Vector search | pgvector 384-dim, cosine similarity, HNSW |
 | Storage | Supabase private buckets |
 | Embedding | sentence-transformers `paraphrase-multilingual-MiniLM-L12-v2` |
-| LLM / Vision | Gemini model configured by `GEMINI_MODEL` |
+| LLM / Vision | Groq + Azure Vision with automatic Gemini fallback |
 | Jobs | Celery + Redis |
 | PDF | pdfplumber ingest + pdfjs-dist viewer |
 | ORM schema | Prisma Client Python schema retained for relational model documentation/tooling |

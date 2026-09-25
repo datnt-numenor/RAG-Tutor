@@ -6,27 +6,18 @@ from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from functools import lru_cache
 
-from google import genai
-from google.genai import types
-
-from app.core.config import get_settings
 from app.core.database import get_supabase_admin
+from app.services.ai_provider import TextGenerationProvider, get_aux_text_provider
 from app.services.chunk_sampling_service import balanced_active_chunks
 
 
 class QuizService:
     DEDUP_THRESHOLD = 0.90
 
-    def __init__(self, supabase, gemini_api_key: str, gemini_model: str):
+    def __init__(self, supabase, provider: TextGenerationProvider):
         self.supabase = supabase
-        self.gemini_model = gemini_model
-        self.client = genai.Client(
-            api_key=gemini_api_key,
-            http_options=types.HttpOptions(
-                timeout=35_000,
-                retry_options=types.HttpRetryOptions(attempts=1),
-            ),
-        )
+        self.provider = provider
+        self.gemini_model = provider.model_name
 
     def _active_chunks(self, project_id: str, limit: int = 12) -> list[dict]:
         return balanced_active_chunks(
@@ -188,13 +179,9 @@ CONTEXT:
 {context}
 """.strip()
 
-        interaction = self.client.interactions.create(
-            model=self.gemini_model,
-            input=prompt,
-        )
-        parsed = self._parse_json(interaction.output_text)
+        parsed = self._parse_json(self.provider.generate(prompt))
         if not isinstance(parsed, list):
-            raise ValueError("Gemini did not return a question array")
+            raise ValueError("AI provider did not return a question array")
 
         candidates: list[dict] = []
         for item in parsed[:candidate_count]:
@@ -338,18 +325,14 @@ Return ONLY JSON:
 }}
 """.strip()
 
-        interaction = self.client.interactions.create(
-            model=self.gemini_model,
-            input=prompt,
-        )
-        result = self._parse_json(interaction.output_text)
+        result = self._parse_json(self.provider.generate(prompt, json_mode=True))
         score = float(result.get("score", 0))
         score = max(0.0, min(float(question["max_score"]), score))
         return {
             "score": score,
             "feedback": str(result.get("feedback", "")),
             "is_correct": bool(result.get("is_correct", False)),
-            "grading_method": "gemini-rubric-evidence-v2",
+            "grading_method": "ai-rubric-evidence-v3",
         }
 
     def update_review_state(
@@ -411,9 +394,7 @@ Return ONLY JSON:
 
 @lru_cache
 def get_quiz_service() -> QuizService:
-    settings = get_settings()
     return QuizService(
         supabase=get_supabase_admin(),
-        gemini_api_key=settings.gemini_api_key,
-        gemini_model=settings.gemini_aux_model,
+        provider=get_aux_text_provider(),
     )

@@ -25,6 +25,17 @@ Railway production environment also needs the same two private values:
 - `SUPABASE_SERVICE_KEY`
 - `GEMINI_API_KEY`
 
+Optional primary AI providers (recommended to reduce Gemini free-tier pressure):
+
+- `GROQ_API_KEY`: enables Groq for text generation, streaming, and vision.
+- `GROQ_MODEL=qwen/qwen3.8-27b`
+- `GROQ_VISION_MODEL=qwen/qwen3.8-27b`
+- `AZURE_VISION_ENDPOINT`: enables Azure Image Analysis OCR before LLM vision.
+- `AZURE_VISION_KEY`
+
+Routing is `Groq -> Gemini` for text and `Azure Vision -> Groq Vision -> Gemini`
+for OCR. Missing optional credentials are skipped automatically.
+
 Public values are already known/configured where appropriate:
 
 - `SUPABASE_URL=https://xlreazpjvcudvbslrzdw.supabase.co`

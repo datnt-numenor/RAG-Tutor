@@ -2,22 +2,13 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from google import genai
-from google.genai import types
-
-from app.core.config import get_settings
+from app.services.ai_provider import TextGenerationProvider, get_aux_text_provider
 
 
 class DocumentSummaryService:
-    def __init__(self, api_key: str, model: str):
-        self.client = genai.Client(
-            api_key=api_key,
-            http_options=types.HttpOptions(
-                timeout=30_000,
-                retry_options=types.HttpRetryOptions(attempts=1),
-            ),
-        )
-        self.model = model
+    def __init__(self, provider: TextGenerationProvider):
+        self.provider = provider
+        self.model = provider.model_name
 
     def summarize(
         self,
@@ -66,20 +57,12 @@ Nội dung:
 {context}
 """.strip()
 
-        interaction = self.client.interactions.create(
-            model=self.model,
-            input=prompt,
-        )
-        summary = (interaction.output_text or "").strip()
+        summary = self.provider.generate(prompt).strip()
         if not summary:
-            raise ValueError("Gemini returned empty document summary")
+            raise ValueError("AI provider returned empty document summary")
         return summary
 
 
 @lru_cache
 def get_document_summary_service() -> DocumentSummaryService:
-    settings = get_settings()
-    return DocumentSummaryService(
-        api_key=settings.gemini_api_key,
-        model=settings.gemini_aux_model,
-    )
+    return DocumentSummaryService(provider=get_aux_text_provider())

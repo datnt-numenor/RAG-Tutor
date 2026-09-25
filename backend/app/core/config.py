@@ -38,6 +38,14 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-3.6-flash"
     gemini_aux_model: str = "gemini-3.5-flash-lite"
 
+    # â”€â”€ Alternative AI providers â”€â”€
+    groq_api_key: str | None = None
+    groq_model: str = "qwen/qwen3.8-27b"
+    groq_vision_model: str = "qwen/qwen3.8-27b"
+    azure_vision_endpoint: str | None = None
+    azure_vision_key: str | None = None
+    ai_request_timeout_seconds: float = 60.0
+
     # ── Embedding ─────────────────────────────────────────────────────────────
     embedding_model: str = "paraphrase-multilingual-MiniLM-L12-v2"
     embedding_dim: int = 384

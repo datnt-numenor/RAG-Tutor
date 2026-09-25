@@ -649,6 +649,13 @@ async def upload_essay_scan(
             mime_type,
         )
     except Exception as exc:
+        logger.exception(
+            "ocr_failed",
+            project_id=project_id_str,
+            session_id=session_id_str,
+            question_id=question_id_str,
+            error_type=exc.__class__.__name__,
+        )
         db.storage.from_("quiz-submissions").remove([storage_path])
         raise HTTPException(status_code=502, detail="OCR failed") from exc
 

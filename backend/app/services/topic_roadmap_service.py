@@ -7,18 +7,16 @@ from datetime import date, datetime, time, timedelta, timezone
 from functools import lru_cache
 from zoneinfo import ZoneInfo
 
-from google import genai
-
-from app.core.config import get_settings
 from app.core.database import get_supabase_admin
+from app.services.ai_provider import TextGenerationProvider, get_text_provider
 from app.services.chunk_sampling_service import balanced_active_chunks
 
 
 class TopicRoadmapService:
-    def __init__(self, supabase, gemini_api_key: str, gemini_model: str):
+    def __init__(self, supabase, provider: TextGenerationProvider):
         self.supabase = supabase
-        self.model = gemini_model
-        self.client = genai.Client(api_key=gemini_api_key)
+        self.provider = provider
+        self.model = provider.model_name
 
     def _parse_json(self, text: str):
         clean = re.sub(r"^\s*\x60\x60\x60(?:json)?\s*", "", text.strip(), flags=re.I)
@@ -76,11 +74,10 @@ CONTEXT:
 {context}
 """.strip()
 
-        interaction = self.client.interactions.create(model=self.model, input=prompt)
-        parsed = self._parse_json(interaction.output_text)
+        parsed = self._parse_json(self.provider.generate(prompt, json_mode=True))
         topics = parsed.get("topics", [])
         if not isinstance(topics, list) or not topics:
-            raise ValueError("Gemini did not return topics")
+            raise ValueError("AI provider did not return topics")
 
         self.supabase.table("topics").delete().eq("project_id", project_id).execute()
 
@@ -298,9 +295,7 @@ CONTEXT:
 
 @lru_cache
 def get_topic_roadmap_service() -> TopicRoadmapService:
-    settings = get_settings()
     return TopicRoadmapService(
         supabase=get_supabase_admin(),
-        gemini_api_key=settings.gemini_api_key,
-        gemini_model=settings.gemini_model,
+        provider=get_text_provider(),
     )
