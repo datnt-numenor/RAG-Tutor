@@ -14,6 +14,12 @@ COPY requirements.txt ./
 RUN python -m pip install --upgrade pip \
     && pip install -r requirements.txt
 
+# Prime the Hugging Face cache during the image build. The production worker
+# has a 1 GB memory limit; downloading and loading the model together on the
+# first task can briefly exceed that limit and kill the worker. Loading it once
+# here keeps the runtime cold-start on the lower-memory cached path.
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')"
+
 COPY . .
 
 EXPOSE 8000
