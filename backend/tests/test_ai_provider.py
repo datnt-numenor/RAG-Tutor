@@ -56,6 +56,26 @@ def test_groq_post_stops_retrying_after_limit(monkeypatch):
         provider._groq_post({"model": "groq-model"})
 
 
+def test_groq_generate_caps_output_and_disables_reasoning(monkeypatch):
+    provider = make_provider()
+    captured: dict = {}
+    request = httpx.Request("POST", provider._groq_url)
+
+    def fake_post(payload):
+        captured.update(payload)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "ok"}}]},
+            request=request,
+        )
+
+    monkeypatch.setattr(provider, "_groq_post", fake_post)
+
+    assert provider._groq_generate("prompt") == "ok"
+    assert captured["max_completion_tokens"] == 2048
+    assert captured["reasoning_effort"] == "none"
+
+
 def test_generate_uses_groq_when_configured(monkeypatch):
     provider = make_provider()
     monkeypatch.setattr(provider, "_groq_generate", lambda prompt, json_mode=False: "groq")

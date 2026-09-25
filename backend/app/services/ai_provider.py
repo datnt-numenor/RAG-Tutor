@@ -18,6 +18,7 @@ logger = structlog.get_logger()
 
 _GROQ_MAX_RATE_LIMIT_RETRIES = 2
 _GROQ_MAX_RETRY_DELAY_SECONDS = 60.0
+_GROQ_MAX_COMPLETION_TOKENS = 2048
 
 
 class TextGenerationProvider:
@@ -104,6 +105,8 @@ class TextGenerationProvider:
             "model": self.groq_model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.2,
+            "max_completion_tokens": _GROQ_MAX_COMPLETION_TOKENS,
+            "reasoning_effort": "none",
         }
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
@@ -142,6 +145,8 @@ class TextGenerationProvider:
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.2,
             "stream": True,
+            "max_completion_tokens": _GROQ_MAX_COMPLETION_TOKENS,
+            "reasoning_effort": "none",
         }
         for attempt in range(_GROQ_MAX_RATE_LIMIT_RETRIES + 1):
             with httpx.stream(
@@ -248,6 +253,8 @@ class TextGenerationProvider:
                     }
                 ],
                 "temperature": 0.1,
+                "max_completion_tokens": _GROQ_MAX_COMPLETION_TOKENS,
+                "reasoning_effort": "none",
             }
             if json_mode:
                 payload["response_format"] = {"type": "json_object"}
