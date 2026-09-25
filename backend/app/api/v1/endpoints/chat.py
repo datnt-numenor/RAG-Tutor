@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Annotated
 from uuid import UUID
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -17,6 +18,7 @@ from app.core.rate_limit import enforce_ai_rate_limit
 from app.services.progress_service import get_progress_service
 
 router = APIRouter()
+logger = structlog.get_logger()
 
 
 def _assert_member(db, project_id: str, user_id: str) -> None:
@@ -348,6 +350,13 @@ async def send_message_stream(
 
             yield _sse("done", {"message_id": assistant["id"]})
         except Exception as exc:
+            logger.exception(
+                "chat_stream_failed",
+                project_id=str(project_id),
+                session_id=str(session_id),
+                error_type=exc.__class__.__name__,
+                emitted_parts=len(answer_parts),
+            )
             error_text = "Không thể xử lý câu hỏi lúc này."
             db.table("chat_messages").insert({
                 "session_id": str(session_id),

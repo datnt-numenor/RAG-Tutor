@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+import structlog
 from google import genai
 
 from app.core.config import get_settings
 from app.core.database import get_supabase_admin
 from app.services.embedding_service import EmbeddingService
+
+
+logger = structlog.get_logger()
 
 
 class RAGService:
@@ -88,21 +92,38 @@ Yêu cầu:
     def stream_generate_answer(self, question: str, context: str):
         """Yield text deltas from Gemini Interactions streaming."""
         prompt = self.build_prompt(question=question, context=context)
-        stream = self.gemini_client.interactions.create(
-            model=self.gemini_model,
-            input=prompt,
-            stream=True,
-        )
+        emitted_text = False
 
-        for event in stream:
-            if getattr(event, "event_type", None) != "step.delta":
-                continue
-            delta = getattr(event, "delta", None)
-            if getattr(delta, "type", None) != "text":
-                continue
-            text = getattr(delta, "text", None)
-            if text:
-                yield text
+        try:
+            stream = self.gemini_client.interactions.create(
+                model=self.gemini_model,
+                input=prompt,
+                stream=True,
+            )
+
+            for event in stream:
+                if getattr(event, "event_type", None) != "step.delta":
+                    continue
+                delta = getattr(event, "delta", None)
+                if getattr(delta, "type", None) != "text":
+                    continue
+                text = getattr(delta, "text", None)
+                if text:
+                    emitted_text = True
+                    yield text
+        except Exception as exc:
+            if emitted_text:
+                raise
+            logger.exception(
+                "gemini_stream_failed_before_text",
+                error_type=exc.__class__.__name__,
+            )
+
+        if not emitted_text:
+            logger.warning("gemini_stream_empty_fallback")
+            answer = self.generate_answer(question=question, context=context)
+            if answer:
+                yield answer
 
     def build_sources(self, results: list[dict]) -> list[dict]:
         sources: list[dict] = []
