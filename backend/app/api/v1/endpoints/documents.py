@@ -8,6 +8,7 @@ from uuid import UUID
 import aiofiles
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.database import get_supabase_admin
@@ -67,7 +68,9 @@ async def upload_document(
 ) -> dict:
     """Upload PDF/DOCX, create document record + ingest job. Returns 202 immediately."""
     db = get_supabase_admin()
-    _assert_owner(db, str(project_id), current_user.user_id)
+    await run_in_threadpool(
+        _assert_owner, db, str(project_id), current_user.user_id
+    )
 
     content = await file.read()
     if not content:
@@ -86,32 +89,38 @@ async def upload_document(
     sha256 = hashlib.sha256(content).hexdigest()
 
     # Create document record
-    doc_res = db.table("documents").insert({
+    doc_query = db.table("documents").insert({
         "project_id": str(project_id),
         "created_by": current_user.user_id,
         "display_name": filename,
         "status": "active",
-    }).execute()
+    })
+    doc_res = await run_in_threadpool(doc_query.execute)
     document_id = doc_res.data[0]["id"]
 
     # Determine version number
-    prev_versions = (
+    prev_versions_query = (
         db.table("document_versions")
         .select("version_number")
         .eq("document_id", document_id)
         .order("version_number", desc=True)
         .limit(1)
-        .execute()
     )
+    prev_versions = await run_in_threadpool(prev_versions_query.execute)
     version_number = (prev_versions.data[0]["version_number"] + 1) if prev_versions.data else 1
 
     storage_path = f"projects/{project_id}/documents/{document_id}/versions/v{version_number}/{filename}"
 
     # Upload to Supabase Storage
-    db.storage.from_("documents").upload(storage_path, content, {"content-type": file.content_type})
+    await run_in_threadpool(
+        db.storage.from_("documents").upload,
+        storage_path,
+        content,
+        {"content-type": file.content_type},
+    )
 
     # Create version record
-    ver_res = db.table("document_versions").insert({
+    version_query = db.table("document_versions").insert({
         "document_id": document_id,
         "project_id": str(project_id),
         "version_number": version_number,
@@ -121,11 +130,12 @@ async def upload_document(
         "file_size": len(content),
         "sha256": sha256,
         "status": "pending",
-    }).execute()
+    })
+    ver_res = await run_in_threadpool(version_query.execute)
     version_id = ver_res.data[0]["id"]
 
     # Create ingest job
-    job_res = db.table("document_jobs").insert({
+    job_query = db.table("document_jobs").insert({
         "project_id": str(project_id),
         "document_id": document_id,
         "document_version_id": version_id,
@@ -133,18 +143,22 @@ async def upload_document(
         "status": "queued",
         "stage": "store",
         "max_attempts": 3,
-    }).execute()
+    })
+    job_res = await run_in_threadpool(job_query.execute)
     job_id = job_res.data[0]["id"]
 
     from app.workers.ingest_worker import ingest_document
 
     try:
-        ingest_document.delay(document_id, version_id, job_id)
+        await run_in_threadpool(
+            ingest_document.delay, document_id, version_id, job_id
+        )
     except Exception as exc:
-        db.table("document_jobs").update({
+        failure_query = db.table("document_jobs").update({
             "status": "failed",
             "last_error": f"Failed to dispatch ingest worker: {exc}",
-        }).eq("id", job_id).execute()
+        }).eq("id", job_id)
+        await run_in_threadpool(failure_query.execute)
         raise HTTPException(
             status_code=503,
             detail="Document uploaded but ingestion worker could not be queued",
@@ -166,16 +180,18 @@ async def upload_document_version(
 ) -> dict:
     """Upload a new version for an existing document and ingest it asynchronously."""
     db = get_supabase_admin()
-    _assert_owner(db, str(project_id), current_user.user_id)
+    await run_in_threadpool(
+        _assert_owner, db, str(project_id), current_user.user_id
+    )
 
-    document = (
+    document_query = (
         db.table("documents")
         .select("id, status")
         .eq("id", str(document_id))
         .eq("project_id", str(project_id))
         .maybe_single()
-        .execute()
     )
+    document = await run_in_threadpool(document_query.execute)
     if not document.data:
         raise HTTPException(status_code=404, detail="Document not found")
     if document.data["status"] == "deleting":
@@ -196,28 +212,28 @@ async def upload_document_version(
 
     sha256 = hashlib.sha256(content).hexdigest()
 
-    duplicate = (
+    duplicate_query = (
         db.table("document_versions")
         .select("id, version_number")
         .eq("document_id", str(document_id))
         .eq("sha256", sha256)
         .maybe_single()
-        .execute()
     )
+    duplicate = await run_in_threadpool(duplicate_query.execute)
     if duplicate.data:
         raise HTTPException(
             status_code=409,
             detail=f"This exact file is already version {duplicate.data['version_number']}",
         )
 
-    latest = (
+    latest_query = (
         db.table("document_versions")
         .select("version_number")
         .eq("document_id", str(document_id))
         .order("version_number", desc=True)
         .limit(1)
-        .execute()
     )
+    latest = await run_in_threadpool(latest_query.execute)
     version_number = (
         int(latest.data[0]["version_number"]) + 1 if latest.data else 1
     )
@@ -228,14 +244,15 @@ async def upload_document_version(
         f"versions/v{version_number}/{filename}"
     )
 
-    db.storage.from_("documents").upload(
+    await run_in_threadpool(
+        db.storage.from_("documents").upload,
         storage_path,
         content,
         {"content-type": file.content_type},
     )
 
     try:
-        version_res = db.table("document_versions").insert({
+        version_query = db.table("document_versions").insert({
             "document_id": str(document_id),
             "project_id": str(project_id),
             "version_number": version_number,
@@ -245,16 +262,19 @@ async def upload_document_version(
             "file_size": len(content),
             "sha256": sha256,
             "status": "pending",
-        }).execute()
+        })
+        version_res = await run_in_threadpool(version_query.execute)
     except Exception:
         try:
-            db.storage.from_("documents").remove([storage_path])
+            await run_in_threadpool(
+                db.storage.from_("documents").remove, [storage_path]
+            )
         finally:
             raise
 
     version_id = version_res.data[0]["id"]
 
-    job_res = db.table("document_jobs").insert({
+    job_query = db.table("document_jobs").insert({
         "project_id": str(project_id),
         "document_id": str(document_id),
         "document_version_id": version_id,
@@ -262,18 +282,22 @@ async def upload_document_version(
         "status": "queued",
         "stage": "store",
         "max_attempts": 3,
-    }).execute()
+    })
+    job_res = await run_in_threadpool(job_query.execute)
     job_id = job_res.data[0]["id"]
 
     from app.workers.ingest_worker import ingest_document
 
     try:
-        ingest_document.delay(str(document_id), version_id, job_id)
+        await run_in_threadpool(
+            ingest_document.delay, str(document_id), version_id, job_id
+        )
     except Exception as exc:
-        db.table("document_jobs").update({
+        failure_query = db.table("document_jobs").update({
             "status": "failed",
             "last_error": f"Failed to dispatch ingest worker: {exc}",
-        }).eq("id", job_id).execute()
+        }).eq("id", job_id)
+        await run_in_threadpool(failure_query.execute)
         raise HTTPException(
             status_code=503,
             detail="Version uploaded but ingestion worker could not be queued",

@@ -194,14 +194,14 @@ async def rebuild_progress(
     days: int = Query(30, ge=1, le=365),
 ) -> dict:
     db = get_supabase_admin()
-    member = (
+    member_query = (
         db.table("project_members")
         .select("id")
         .eq("project_id", project_id)
         .eq("user_id", current_user.user_id)
         .maybe_single()
-        .execute()
     )
+    member = await run_in_threadpool(member_query.execute)
     if not member.data:
         raise HTTPException(status_code=404, detail="Project not found")
 

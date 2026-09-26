@@ -133,13 +133,13 @@ def get_me(
 
 
 @router.patch("/me")
-async def update_me(
+def update_me(
     body: ProfileUpdate,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> dict:
     payload = body.model_dump(exclude_unset=True)
     if not payload:
-        return await get_me(current_user)
+        return get_me(current_user)
 
     db = get_supabase_admin()
     result = (
@@ -151,4 +151,4 @@ async def update_me(
     if not result.data:
         raise HTTPException(status_code=404, detail="User profile not found")
 
-    return await get_me(current_user)
+    return get_me(current_user)

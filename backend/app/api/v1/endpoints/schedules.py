@@ -151,28 +151,30 @@ async def complete_schedule(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> dict:
     db = get_supabase_admin()
-    schedule = (
+    schedule_query = (
         db.table("schedules")
         .select("id, project_id, topic_id, start_time, end_time")
         .eq("id", str(schedule_id))
         .maybe_single()
-        .execute()
     )
+    schedule = await run_in_threadpool(schedule_query.execute)
     if not schedule.data:
         raise HTTPException(status_code=404, detail="Schedule not found")
 
-    _membership(db, schedule.data["project_id"], current_user.user_id)
+    await run_in_threadpool(
+        _membership, db, schedule.data["project_id"], current_user.user_id
+    )
 
     completed_at = datetime.now(timezone.utc)
-    result = (
+    completion_query = (
         db.table("schedule_completions")
         .upsert({
             "schedule_id": str(schedule_id),
             "user_id": current_user.user_id,
             "completed_at": completed_at.isoformat(),
         }, on_conflict="schedule_id,user_id")
-        .execute()
     )
+    result = await run_in_threadpool(completion_query.execute)
 
     duration_seconds = None
     if schedule.data.get("end_time"):
@@ -213,23 +215,26 @@ async def uncomplete_schedule(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> Response:
     db = get_supabase_admin()
-    schedule = (
+    schedule_query = (
         db.table("schedules")
         .select("id, project_id")
         .eq("id", str(schedule_id))
         .maybe_single()
-        .execute()
     )
+    schedule = await run_in_threadpool(schedule_query.execute)
     if not schedule.data:
         raise HTTPException(status_code=404, detail="Schedule not found")
 
-    _membership(db, schedule.data["project_id"], current_user.user_id)
+    await run_in_threadpool(
+        _membership, db, schedule.data["project_id"], current_user.user_id
+    )
 
-    db.table("schedule_completions").delete().eq(
+    completion_query = db.table("schedule_completions").delete().eq(
         "schedule_id", str(schedule_id)
     ).eq(
         "user_id", current_user.user_id
-    ).execute()
+    )
+    await run_in_threadpool(completion_query.execute)
 
     await run_in_threadpool(
         get_progress_service().remove_event,

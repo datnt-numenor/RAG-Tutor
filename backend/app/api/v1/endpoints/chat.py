@@ -197,12 +197,13 @@ async def send_message(
             body.content,
         )
     except Exception as exc:
-        db.table("chat_messages").insert({
+        error_query = db.table("chat_messages").insert({
             "session_id": str(session_id),
             "role": "assistant",
             "content": "Không thể xử lý câu hỏi lúc này.",
             "status": "error",
-        }).execute()
+        })
+        await run_in_threadpool(error_query.execute)
         raise HTTPException(status_code=502, detail="RAG generation failed") from exc
 
     message = await run_in_threadpool(_insert_message, db, {

@@ -111,7 +111,9 @@ async def generate_quiz(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> dict:
     db = get_supabase_admin()
-    _assert_owner(db, str(project_id), current_user.user_id)
+    await run_in_threadpool(
+        _assert_owner, db, str(project_id), current_user.user_id
+    )
     await enforce_ai_rate_limit(
         current_user.user_id,
         bucket="quiz-generate",
@@ -152,13 +154,14 @@ async def generate_quiz(
     ids = [q["id"] for q in questions]
     max_score = sum(float(q.get("max_score") or 0) for q in questions)
 
-    session_res = db.table("quiz_sessions").insert({
+    session_query = db.table("quiz_sessions").insert({
         "project_id": str(project_id),
         "user_id": current_user.user_id,
         "status": "in_progress",
         "question_ids": ids,
         "max_score": max_score,
-    }).execute()
+    })
+    session_res = await run_in_threadpool(session_query.execute)
 
     return {
         "session": session_res.data[0],
@@ -366,17 +369,19 @@ async def answer_question(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> dict:
     db = get_supabase_admin()
-    _assert_member(db, str(project_id), current_user.user_id)
+    await run_in_threadpool(
+        _assert_member, db, str(project_id), current_user.user_id
+    )
 
-    session = (
+    session_query = (
         db.table("quiz_sessions")
         .select("*")
         .eq("id", str(session_id))
         .eq("project_id", str(project_id))
         .eq("user_id", current_user.user_id)
         .maybe_single()
-        .execute()
     )
+    session = await run_in_threadpool(session_query.execute)
     if not session.data:
         raise HTTPException(status_code=404, detail="Quiz session not found")
     if session.data["status"] != "in_progress":
@@ -384,14 +389,14 @@ async def answer_question(
     if str(question_id) not in session.data["question_ids"]:
         raise HTTPException(status_code=404, detail="Question not in this quiz")
 
-    qres = (
+    question_query = (
         db.table("questions")
         .select("*")
         .eq("id", str(question_id))
         .eq("project_id", str(project_id))
         .single()
-        .execute()
     )
+    qres = await run_in_threadpool(question_query.execute)
     question = qres.data
 
     now = datetime.now(timezone.utc).isoformat()
@@ -421,14 +426,16 @@ async def answer_question(
         feedback = graded["feedback"]
         grading_method = graded["grading_method"]
 
-    existing_rows = (
+    existing_query = (
         db.table("quiz_attempts")
         .select("id")
         .eq("quiz_session_id", str(session_id))
         .eq("question_id", str(question_id))
         .eq("user_id", current_user.user_id)
         .limit(1)
-        .execute()
+    )
+    existing_rows = (
+        await run_in_threadpool(existing_query.execute)
     ).data or []
     existing = existing_rows[0] if existing_rows else None
 
@@ -453,14 +460,16 @@ async def answer_question(
     }
 
     if existing:
-        attempt = (
+        attempt_query = (
             db.table("quiz_attempts")
             .update(payload)
             .eq("id", existing["id"])
-            .execute()
-        ).data[0]
+        )
     else:
-        attempt = db.table("quiz_attempts").insert(payload).execute().data[0]
+        attempt_query = db.table("quiz_attempts").insert(payload)
+    attempt = (
+        await run_in_threadpool(attempt_query.execute)
+    ).data[0]
 
     service = get_quiz_service()
     score_ratio = score / float(question["max_score"] or 1)
@@ -585,24 +594,24 @@ async def upload_essay_scan(
     session_id_str = str(session_id)
     question_id_str = str(question_id)
 
-    _assert_member(db, project_id_str, current_user.user_id)
-    session = _get_owned_quiz_session(
-        db,
-        project_id_str,
-        session_id_str,
-        current_user.user_id,
+    await run_in_threadpool(
+        _assert_member, db, project_id_str, current_user.user_id
+    )
+    session = await run_in_threadpool(
+        _get_owned_quiz_session,
+        db, project_id_str, session_id_str, current_user.user_id,
     )
     if question_id_str not in session["question_ids"]:
         raise HTTPException(status_code=404, detail="Question not in this quiz")
 
-    question = (
+    question_query = (
         db.table("questions")
         .select("*")
         .eq("id", question_id_str)
         .eq("project_id", project_id_str)
         .maybe_single()
-        .execute()
     )
+    question = await run_in_threadpool(question_query.execute)
     if not question.data:
         raise HTTPException(status_code=404, detail="Question not found")
     if question.data["question_type"] != "essay":
@@ -629,7 +638,8 @@ async def upload_essay_scan(
         f"quiz/{session_id_str}/{question_id_str}/{uuid4().hex}.{extension}"
     )
 
-    db.storage.from_("quiz-submissions").upload(
+    await run_in_threadpool(
+        db.storage.from_("quiz-submissions").upload,
         storage_path,
         content,
         {"content-type": mime_type},
@@ -656,17 +666,21 @@ async def upload_essay_scan(
             question_id=question_id_str,
             error_type=exc.__class__.__name__,
         )
-        db.storage.from_("quiz-submissions").remove([storage_path])
+        await run_in_threadpool(
+            db.storage.from_("quiz-submissions").remove, [storage_path]
+        )
         raise HTTPException(status_code=502, detail="OCR failed") from exc
 
-    existing_rows = (
+    existing_query = (
         db.table("quiz_attempts")
         .select("id, image_storage_path")
         .eq("quiz_session_id", session_id_str)
         .eq("question_id", question_id_str)
         .eq("user_id", current_user.user_id)
         .limit(1)
-        .execute()
+    )
+    existing_rows = (
+        await run_in_threadpool(existing_query.execute)
     ).data or []
     existing = existing_rows[0] if existing_rows else None
 
@@ -701,18 +715,22 @@ async def upload_essay_scan(
     old_path = None
     if existing:
         old_path = existing.get("image_storage_path")
-        attempt = (
+        attempt_query = (
             db.table("quiz_attempts")
             .update(payload)
             .eq("id", existing["id"])
-            .execute()
-        ).data[0]
+        )
     else:
-        attempt = db.table("quiz_attempts").insert(payload).execute().data[0]
+        attempt_query = db.table("quiz_attempts").insert(payload)
+    attempt = (
+        await run_in_threadpool(attempt_query.execute)
+    ).data[0]
 
     if old_path and old_path != storage_path:
         try:
-            db.storage.from_("quiz-submissions").remove([old_path])
+            await run_in_threadpool(
+                db.storage.from_("quiz-submissions").remove, [old_path]
+            )
         except Exception:
             pass
 
@@ -726,14 +744,14 @@ async def confirm_essay_scan(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> dict:
     db = get_supabase_admin()
-    attempt = (
+    attempt_query = (
         db.table("quiz_attempts")
         .select("*")
         .eq("id", str(attempt_id))
         .eq("user_id", current_user.user_id)
         .maybe_single()
-        .execute()
     )
+    attempt = await run_in_threadpool(attempt_query.execute)
     if not attempt.data:
         raise HTTPException(status_code=404, detail="Quiz attempt not found")
     if attempt.data["submission_type"] != "image_scan":
@@ -743,13 +761,13 @@ async def confirm_essay_scan(
     if not attempt.data.get("question_id"):
         raise HTTPException(status_code=400, detail="Original question is unavailable")
 
-    question = (
+    question_query = (
         db.table("questions")
         .select("*")
         .eq("id", attempt.data["question_id"])
         .maybe_single()
-        .execute()
     )
+    question = await run_in_threadpool(question_query.execute)
     if not question.data:
         raise HTTPException(status_code=404, detail="Question not found")
 
@@ -767,7 +785,7 @@ async def confirm_essay_scan(
     )
 
     now = datetime.now(timezone.utc).isoformat()
-    result = (
+    update_query = (
         db.table("quiz_attempts")
         .update({
             "user_answer": confirmed_text,
@@ -782,8 +800,8 @@ async def confirm_essay_scan(
         })
         .eq("id", str(attempt_id))
         .eq("user_id", current_user.user_id)
-        .execute()
     )
+    result = await run_in_threadpool(update_query.execute)
     updated = result.data[0]
 
     score_ratio = graded["score"] / float(question.data["max_score"] or 1)
