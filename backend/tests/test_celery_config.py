@@ -9,3 +9,7 @@ def test_worker_jobs_are_acknowledged_only_after_completion() -> None:
 
 def test_progress_worker_is_registered() -> None:
     assert "app.workers.progress_worker" in celery_app.conf.include
+
+
+def test_roadmap_worker_is_registered() -> None:
+    assert "app.workers.roadmap_worker" in celery_app.conf.include

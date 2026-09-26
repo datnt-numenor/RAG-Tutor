@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CalendarDays,
@@ -21,6 +21,7 @@ import {
   generateSchedules,
   getProject,
   getRoadmap,
+  getRoadmapJob,
   listSchedules,
   rejectSchedule,
   uncompleteSchedule,
@@ -29,6 +30,7 @@ import {
 
 export function ProjectRoadmap({ projectId }: { projectId: string }) {
   const queryClient = useQueryClient();
+  const [roadmapJobId, setRoadmapJobId] = useState<string | null>(null);
   const project = useQuery({
     queryKey: ["project", projectId],
     queryFn: () => getProject(projectId),
@@ -78,10 +80,33 @@ export function ProjectRoadmap({ projectId }: { projectId: string }) {
 
   const generate = useMutation({
     mutationFn: () => generateRoadmap(projectId),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["roadmap", projectId] });
+    onSuccess: (result) => {
+      setRoadmapJobId(result.job_id);
     },
   });
+
+  const roadmapJob = useQuery({
+    queryKey: ["roadmap-job", projectId, roadmapJobId],
+    queryFn: () => getRoadmapJob(projectId, roadmapJobId!),
+    enabled: Boolean(roadmapJobId),
+    refetchInterval: (query) => {
+      const state = query.state.data?.status;
+      return !state || ["pending", "started", "retry"].includes(state)
+        ? 2000
+        : false;
+    },
+  });
+
+  useEffect(() => {
+    if (roadmapJob.data?.status !== "success") return;
+    void queryClient.invalidateQueries({ queryKey: ["roadmap", projectId] });
+  }, [projectId, queryClient, roadmapJob.data?.status]);
+
+  const roadmapJobActive = Boolean(
+    roadmapJobId &&
+      (!roadmapJob.data?.status ||
+        ["pending", "started", "retry"].includes(roadmapJob.data.status)),
+  );
 
   const generatePlan = useMutation({
     mutationFn: () => generateSchedules(projectId),
@@ -209,10 +234,10 @@ export function ProjectRoadmap({ projectId }: { projectId: string }) {
             </div>
             <button
               onClick={() => generate.mutate()}
-              disabled={generate.isPending}
+              disabled={generate.isPending || roadmapJobActive}
               className="inline-flex items-center justify-center gap-2 rounded-2xl bg-[#b9634c] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50"
             >
-              {generate.isPending ? (
+              {generate.isPending || roadmapJobActive ? (
                 <>
                   <Loader2 size={16} className="animate-spin" />
                   Đang phân tích...
@@ -226,7 +251,7 @@ export function ProjectRoadmap({ projectId }: { projectId: string }) {
             </button>
           </div>
 
-          {generate.isError && (
+          {(generate.isError || roadmapJob.data?.status === "failure") && (
             <div className="mb-4 rounded-xl bg-red-50 p-3 text-sm text-red-700">
               Không generate được roadmap. Project cần document đã ingest xong.
             </div>

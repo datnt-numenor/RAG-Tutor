@@ -10,6 +10,7 @@ from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.database import get_supabase_admin
 from app.services.topic_roadmap_service import get_topic_roadmap_service
 from app.core.rate_limit import enforce_ai_rate_limit
+from app.workers.celery_app import celery_app
 
 router = APIRouter()
 
@@ -60,7 +61,7 @@ async def get_roadmap(
 
 @router.post(
     "/projects/{project_id}/roadmap/generate",
-    status_code=status.HTTP_201_CREATED,
+    status_code=status.HTTP_202_ACCEPTED,
 )
 async def generate_roadmap(
     project_id: UUID,
@@ -80,15 +81,48 @@ async def generate_roadmap(
         window_seconds=300,
     )
 
-    service = get_topic_roadmap_service()
     try:
-        topics = await run_in_threadpool(service.generate_topics, str(project_id))
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        from app.workers.roadmap_worker import generate_topic_roadmap
+
+        task = await run_in_threadpool(
+            generate_topic_roadmap.delay, str(project_id)
+        )
     except Exception as exc:
-        raise HTTPException(status_code=502, detail="Roadmap generation failed") from exc
+        raise HTTPException(
+            status_code=503,
+            detail="Roadmap generation could not be queued",
+        ) from exc
 
     return {
         "project_id": str(project_id),
-        "topics": topics,
+        "job_id": task.id,
+        "status": "queued",
     }
+
+
+@router.get("/projects/{project_id}/roadmap/jobs/{job_id}")
+async def get_roadmap_job(
+    project_id: UUID,
+    job_id: str,
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+) -> dict:
+    db = get_supabase_admin()
+    await run_in_threadpool(
+        _assert_member, db, str(project_id), current_user.user_id
+    )
+
+    task = celery_app.AsyncResult(job_id)
+    state = await run_in_threadpool(lambda: task.state)
+    response = {
+        "job_id": job_id,
+        "project_id": str(project_id),
+        "status": state.lower(),
+    }
+    if state == "SUCCESS":
+        result = await run_in_threadpool(lambda: task.result)
+        if not isinstance(result, dict) or result.get("project_id") != str(project_id):
+            raise HTTPException(status_code=404, detail="Roadmap job not found")
+        response["topic_count"] = int(result.get("topic_count") or 0)
+    elif state == "FAILURE":
+        response["error"] = "Roadmap generation failed"
+    return response

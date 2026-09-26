@@ -17,6 +17,7 @@ def make_celery() -> Celery:
             "app.workers.delete_worker",
             "app.workers.summary_worker",
             "app.workers.progress_worker",
+            "app.workers.roadmap_worker",
         ],
     )
     app.conf.update(

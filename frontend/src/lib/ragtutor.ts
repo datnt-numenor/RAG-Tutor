@@ -580,8 +580,24 @@ export async function getRoadmap(projectId: string) {
 export async function generateRoadmap(projectId: string) {
   const { data } = await api.post<{
     project_id: string;
-    topics: RoadmapTopic[];
+    job_id: string;
+    status: "queued";
   }>(`/projects/${projectId}/roadmap/generate`);
+  return data;
+}
+
+export type RoadmapJob = {
+  job_id: string;
+  project_id: string;
+  status: "pending" | "started" | "retry" | "success" | "failure";
+  topic_count?: number;
+  error?: string;
+};
+
+export async function getRoadmapJob(projectId: string, jobId: string) {
+  const { data } = await api.get<RoadmapJob>(
+    `/projects/${projectId}/roadmap/jobs/${jobId}`,
+  );
   return data;
 }
 
