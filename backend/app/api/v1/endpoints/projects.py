@@ -34,7 +34,7 @@ class ProjectResponse(BaseModel):
 
 
 @router.get("", response_model=list[ProjectResponse])
-async def list_projects(
+def list_projects(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> list[ProjectResponse]:
     """List all projects the current user is a member of."""
@@ -49,7 +49,7 @@ async def list_projects(
 
 
 @router.post("", response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)
-async def create_project(
+def create_project(
     body: ProjectCreate,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> ProjectResponse:
@@ -78,7 +78,7 @@ async def create_project(
 
 
 @router.get("/{project_id}", response_model=ProjectResponse)
-async def get_project(
+def get_project(
     project_id: UUID,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> ProjectResponse:
@@ -100,7 +100,7 @@ async def get_project(
 
 
 @router.patch("/{project_id}", response_model=ProjectResponse)
-async def update_project(
+def update_project(
     project_id: UUID,
     body: ProjectCreate,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
@@ -130,7 +130,7 @@ async def update_project(
 
 
 @router.get("/{project_id}/members")
-async def list_members(
+def list_members(
     project_id: UUID,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> list[dict]:
@@ -156,7 +156,7 @@ async def list_members(
 
 
 @router.delete("/{project_id}/members/{user_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
-async def remove_member(
+def remove_member(
     project_id: UUID,
     user_id: UUID,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
@@ -201,7 +201,7 @@ async def remove_member(
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
 )
-async def delete_project(
+def delete_project(
     project_id: UUID,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> Response:

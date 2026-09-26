@@ -22,7 +22,6 @@ export default function ProgressPage() {
   const progress = useQuery({
     queryKey: ["progress-overview"],
     queryFn: getProgressOverview,
-    refetchInterval: 15000,
   });
 
   const history = useQuery({

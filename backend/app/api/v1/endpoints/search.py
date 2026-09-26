@@ -11,7 +11,7 @@ router = APIRouter()
 
 
 @router.get("/search")
-async def global_search(
+def global_search(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
     q: str = Query(..., min_length=2, max_length=120),
 ) -> list[dict]:

@@ -34,6 +34,33 @@ def _assert_member(db, project_id: str, user_id: str) -> None:
         raise HTTPException(status_code=404, detail="Project not found")
 
 
+def _get_owned_session(
+    db,
+    project_id: str,
+    session_id: str,
+    user_id: str,
+):
+    return (
+        db.table("chat_sessions")
+        .select("id, title")
+        .eq("id", session_id)
+        .eq("project_id", project_id)
+        .eq("user_id", user_id)
+        .maybe_single()
+        .execute()
+    )
+
+
+def _insert_message(db, payload: dict) -> dict:
+    return db.table("chat_messages").insert(payload).execute().data[0]
+
+
+def _update_session(db, session_id: str, payload: dict) -> None:
+    db.table("chat_sessions").update(payload).eq(
+        "id", session_id
+    ).execute()
+
+
 
 class MessageCreate(BaseModel):
     content: str
@@ -47,7 +74,7 @@ def _sse(event: str, payload: dict) -> str:
 
 
 @router.get("/projects/{project_id}/chat/sessions")
-async def list_sessions(
+def list_sessions(
     project_id: UUID,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> list[dict]:
@@ -65,7 +92,7 @@ async def list_sessions(
 
 
 @router.post("/projects/{project_id}/chat/sessions", status_code=status.HTTP_201_CREATED)
-async def create_session(
+def create_session(
     project_id: UUID,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> dict:
@@ -81,7 +108,7 @@ async def create_session(
 
 
 @router.get("/projects/{project_id}/chat/sessions/{session_id}/messages")
-async def list_messages(
+def list_messages(
     project_id: UUID,
     session_id: UUID,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
@@ -118,7 +145,12 @@ async def send_message(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> dict:
     db = get_supabase_admin()
-    _assert_member(db, str(project_id), current_user.user_id)
+    await run_in_threadpool(
+        _assert_member,
+        db,
+        str(project_id),
+        current_user.user_id,
+    )
     await enforce_ai_rate_limit(
         current_user.user_id,
         bucket="chat",
@@ -126,27 +158,29 @@ async def send_message(
         window_seconds=60,
     )
 
-    session = (
-        db.table("chat_sessions")
-        .select("id, title")
-        .eq("id", str(session_id))
-        .eq("project_id", str(project_id))
-        .eq("user_id", current_user.user_id)
-        .maybe_single()
-        .execute()
+    session = await run_in_threadpool(
+        _get_owned_session,
+        db,
+        str(project_id),
+        str(session_id),
+        current_user.user_id,
     )
     if not session.data:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    user_msg = db.table("chat_messages").insert({
-        "session_id": str(session_id),
-        "role": "user",
-        "content": body.content,
-        "status": "delivered",
-    }).execute().data[0]
+    user_msg = await run_in_threadpool(
+        _insert_message,
+        db,
+        {
+            "session_id": str(session_id),
+            "role": "user",
+            "content": body.content,
+            "status": "delivered",
+        },
+    )
 
     await run_in_threadpool(
-        get_progress_service().record_event,
+        get_progress_service().record_event_deferred,
         user_id=current_user.user_id,
         project_id=str(project_id),
         event_type="chat_question",
@@ -171,7 +205,7 @@ async def send_message(
         }).execute()
         raise HTTPException(status_code=502, detail="RAG generation failed") from exc
 
-    msg_res = db.table("chat_messages").insert({
+    message = await run_in_threadpool(_insert_message, db, {
         "session_id": str(session_id),
         "role": "assistant",
         "content": result["answer"],
@@ -183,7 +217,7 @@ async def send_message(
         },
         "model_name": result["model_name"],
         "prompt_version": result["prompt_version"],
-    }).execute()
+    })
 
     session_update = {}
     if session.data.get("title") == "New conversation":
@@ -191,11 +225,14 @@ async def send_message(
 
     session_update["updated_at"] = datetime.now(timezone.utc).isoformat()
 
-    db.table("chat_sessions").update(session_update).eq(
-        "id", str(session_id)
-    ).execute()
+    await run_in_threadpool(
+        _update_session,
+        db,
+        str(session_id),
+        session_update,
+    )
 
-    return msg_res.data[0]
+    return message
 
 
 
@@ -209,7 +246,12 @@ async def send_message_stream(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ):
     db = get_supabase_admin()
-    _assert_member(db, str(project_id), current_user.user_id)
+    await run_in_threadpool(
+        _assert_member,
+        db,
+        str(project_id),
+        current_user.user_id,
+    )
     await enforce_ai_rate_limit(
         current_user.user_id,
         bucket="chat",
@@ -217,27 +259,29 @@ async def send_message_stream(
         window_seconds=60,
     )
 
-    session = (
-        db.table("chat_sessions")
-        .select("id, title")
-        .eq("id", str(session_id))
-        .eq("project_id", str(project_id))
-        .eq("user_id", current_user.user_id)
-        .maybe_single()
-        .execute()
+    session = await run_in_threadpool(
+        _get_owned_session,
+        db,
+        str(project_id),
+        str(session_id),
+        current_user.user_id,
     )
     if not session.data:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    user_msg = db.table("chat_messages").insert({
-        "session_id": str(session_id),
-        "role": "user",
-        "content": body.content,
-        "status": "delivered",
-    }).execute().data[0]
+    user_msg = await run_in_threadpool(
+        _insert_message,
+        db,
+        {
+            "session_id": str(session_id),
+            "role": "user",
+            "content": body.content,
+            "status": "delivered",
+        },
+    )
 
     await run_in_threadpool(
-        get_progress_service().record_event,
+        get_progress_service().record_event_deferred,
         user_id=current_user.user_id,
         project_id=str(project_id),
         event_type="chat_question",
@@ -268,7 +312,7 @@ async def send_message_stream(
 
     if not results:
         answer = "Không đủ thông tin trong tài liệu để trả lời câu hỏi này."
-        assistant = db.table("chat_messages").insert({
+        assistant = await run_in_threadpool(_insert_message, db, {
             "session_id": str(session_id),
             "role": "assistant",
             "content": answer,
@@ -280,7 +324,7 @@ async def send_message_stream(
             },
             "model_name": rag_service.gemini_model,
             "prompt_version": "basic-rag-v1-stream",
-        }).execute().data[0]
+        })
 
         def no_evidence_stream():
             yield _sse("meta", {

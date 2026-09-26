@@ -119,7 +119,7 @@ def _get_version_or_404(
 @router.get(
     "/projects/{project_id}/documents/{document_id}/versions/{version_id}/annotations"
 )
-async def list_annotations(
+def list_annotations(
     project_id: UUID,
     document_id: UUID,
     version_id: UUID,
@@ -154,7 +154,7 @@ async def list_annotations(
     "/projects/{project_id}/documents/{document_id}/versions/{version_id}/annotations",
     status_code=status.HTTP_201_CREATED,
 )
-async def create_annotation(
+def create_annotation(
     project_id: UUID,
     document_id: UUID,
     version_id: UUID,
@@ -187,7 +187,7 @@ async def create_annotation(
 
 
 @router.patch("/annotations/{annotation_id}")
-async def update_annotation(
+def update_annotation(
     annotation_id: UUID,
     body: AnnotationUpdate,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
@@ -225,7 +225,7 @@ async def update_annotation(
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
 )
-async def delete_annotation(
+def delete_annotation(
     annotation_id: UUID,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> Response:

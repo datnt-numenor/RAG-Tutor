@@ -288,7 +288,7 @@ async def upload_document_version(
 
 
 @router.get("/projects/{project_id}/documents")
-async def list_documents(
+def list_documents(
     project_id: UUID,
     current_user: AuthenticatedUser = Depends(get_current_user),
 ) -> list[dict]:
@@ -307,7 +307,7 @@ async def list_documents(
 
 
 @router.get("/projects/{project_id}/documents/{document_id}")
-async def get_document_detail(
+def get_document_detail(
     project_id: UUID,
     document_id: UUID,
     current_user: AuthenticatedUser = Depends(get_current_user),
@@ -347,7 +347,7 @@ async def get_document_detail(
 
 
 @router.delete("/projects/{project_id}/documents/{document_id}", status_code=status.HTTP_202_ACCEPTED)
-async def delete_document(
+def delete_document(
     project_id: UUID,
     document_id: UUID,
     current_user: AuthenticatedUser = Depends(get_current_user),
@@ -419,7 +419,7 @@ async def delete_document(
 
 
 @router.get("/projects/{project_id}/document-jobs")
-async def list_project_document_jobs(
+def list_project_document_jobs(
     project_id: UUID,
     current_user: AuthenticatedUser = Depends(get_current_user),
 ) -> list[dict]:
@@ -439,7 +439,7 @@ async def list_project_document_jobs(
 
 
 @router.get("/document-versions/{version_id}/signed-url")
-async def get_signed_url(
+def get_signed_url(
     version_id: UUID,
     current_user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict:

@@ -23,7 +23,7 @@ class TopicRoadmapService:
         clean = re.sub(r"\s*\x60\x60\x60\s*$", "", clean)
         return json.loads(clean)
 
-    def _active_chunks(self, project_id: str, limit: int = 24) -> list[dict]:
+    def _active_chunks(self, project_id: str, limit: int = 16) -> list[dict]:
         return balanced_active_chunks(
             self.supabase,
             project_id,
@@ -38,7 +38,7 @@ class TopicRoadmapService:
         parts = []
         for i, chunk in enumerate(chunks, start=1):
             filename = (chunk.get("document_versions") or {}).get("original_filename", "unknown")
-            excerpt = chunk["content"][:1800]
+            excerpt = chunk["content"][:1400]
             parts.append(
                 f"[Chunk {i} | {filename} | page {chunk.get('page_number')}]\n{excerpt}"
             )
@@ -81,14 +81,24 @@ CONTEXT:
 
         self.supabase.table("topics").delete().eq("project_id", project_id).execute()
 
-        inserted = []
-        by_name: dict[str, dict] = {}
-        source_map: dict[str, list[int]] = {}
-        prereq_map: dict[str, list[str]] = {}
-
+        normalized_items: list[dict] = []
+        topic_rows: list[dict] = []
         for item in topics[:12]:
             name = str(item["name"]).strip()
-            row = {
+            normalized_items.append({
+                "name": name,
+                "source_chunk_numbers": [
+                    int(n) for n in item.get("source_chunk_numbers", [])
+                    if isinstance(n, int) or (
+                        isinstance(n, str) and n.isdigit()
+                    )
+                ],
+                "prerequisites": [
+                    str(value).strip()
+                    for value in item.get("prerequisites", [])
+                ],
+            })
+            topic_rows.append({
                 "project_id": project_id,
                 "name": name,
                 "description": item.get("description"),
@@ -96,20 +106,30 @@ CONTEXT:
                 "bloom_level": item.get("bloom_level"),
                 "is_core": bool(item.get("is_core", False)),
                 "model_name": self.model,
-                "prompt_version": "topics-v1",
-            }
-            created = self.supabase.table("topics").insert(row).execute().data[0]
-            inserted.append(created)
-            by_name[name.casefold()] = created
-            source_map[created["id"]] = [
-                int(n) for n in item.get("source_chunk_numbers", [])
-                if isinstance(n, int) or (isinstance(n, str) and n.isdigit())
-            ]
-            prereq_map[created["id"]] = [str(x).strip() for x in item.get("prerequisites", [])]
+                "prompt_version": "topics-v2",
+            })
+
+        inserted = (
+            self.supabase.table("topics")
+            .insert(topic_rows)
+            .execute()
+        ).data or []
+        by_name = {
+            str(topic["name"]).casefold(): topic
+            for topic in inserted
+        }
+        normalized_by_name = {
+            str(item["name"]).casefold(): item
+            for item in normalized_items
+        }
 
         source_rows = []
         for topic in inserted:
-            for n in source_map.get(topic["id"], []):
+            normalized = normalized_by_name.get(
+                str(topic["name"]).casefold(),
+                {},
+            )
+            for n in normalized.get("source_chunk_numbers", []):
                 if 1 <= n <= len(chunks):
                     source_rows.append({
                         "topic_id": topic["id"],
@@ -121,7 +141,11 @@ CONTEXT:
 
         prereq_rows = []
         for topic in inserted:
-            for prereq_name in prereq_map.get(topic["id"], []):
+            normalized = normalized_by_name.get(
+                str(topic["name"]).casefold(),
+                {},
+            )
+            for prereq_name in normalized.get("prerequisites", []):
                 prereq = by_name.get(prereq_name.casefold())
                 if prereq and prereq["id"] != topic["id"]:
                     prereq_rows.append({

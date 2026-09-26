@@ -56,7 +56,7 @@ class ProfileUpdate(BaseModel):
 
 
 @router.post("/signup", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
-async def sign_up(body: SignUpRequest) -> TokenResponse:
+def sign_up(body: SignUpRequest) -> TokenResponse:
     """Register a new user via Supabase Auth."""
     client = get_supabase_anon()
     try:
@@ -86,7 +86,7 @@ async def sign_up(body: SignUpRequest) -> TokenResponse:
 
 
 @router.post("/signin", response_model=TokenResponse)
-async def sign_in(body: SignInRequest) -> TokenResponse:
+def sign_in(body: SignInRequest) -> TokenResponse:
     """Authenticate and return a Supabase access token."""
     client = get_supabase_anon()
     try:
@@ -100,7 +100,7 @@ async def sign_in(body: SignInRequest) -> TokenResponse:
 
 
 @router.post("/signout", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
-async def sign_out(
+def sign_out(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> Response:
     """End the local API session response without a response body."""
@@ -108,7 +108,7 @@ async def sign_out(
 
 
 @router.get("/me")
-async def get_me(
+def get_me(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> dict:
     db = get_supabase_admin()

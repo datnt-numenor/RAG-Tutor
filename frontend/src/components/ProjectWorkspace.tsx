@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { CollaborationPanel } from "@/components/CollaborationPanel";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -48,7 +48,6 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
   const documents = useQuery({
     queryKey: ["documents", projectId],
     queryFn: () => listDocuments(projectId),
-    refetchInterval: 5000,
   });
 
   const jobs = useQuery({
@@ -58,9 +57,22 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
       const items = query.state.data ?? [];
       return items.some((job) => ["queued", "running"].includes(job.status))
         ? 2500
-        : 10000;
+        : false;
     },
   });
+  const hasActiveJobs = Boolean(
+    jobs.data?.some((job) => ["queued", "running"].includes(job.status)),
+  );
+  const previouslyHadActiveJobs = useRef(false);
+
+  useEffect(() => {
+    if (previouslyHadActiveJobs.current && !hasActiveJobs) {
+      void queryClient.invalidateQueries({
+        queryKey: ["documents", projectId],
+      });
+    }
+    previouslyHadActiveJobs.current = hasActiveJobs;
+  }, [hasActiveJobs, projectId, queryClient]);
 
   const sessions = useQuery({
     queryKey: ["chat-sessions", projectId],

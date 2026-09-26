@@ -109,23 +109,38 @@ def balanced_active_chunks(
         math.ceil(limit / len(ready_documents)),
     )
 
+    active_version_ids = [
+        document["active_version_id"]
+        for document in ready_documents
+    ]
+    fetched_rows = (
+        supabase.table("chunks")
+        .select(
+            "id, content, page_number, section_title, chunk_index, "
+            "document_id, document_version_id"
+        )
+        .eq("project_id", project_id)
+        .in_("document_version_id", active_version_ids)
+        .order("document_id")
+        .order("chunk_index")
+        .limit(max_documents * max_chunks_per_document)
+        .execute()
+    ).data or []
+
+    rows_by_version: dict[str, list[dict]] = {
+        version_id: [] for version_id in active_version_ids
+    }
+    for row in fetched_rows:
+        version_id = row.get("document_version_id")
+        group = rows_by_version.get(version_id)
+        if group is not None and len(group) < max_chunks_per_document:
+            group.append(row)
+
     prepared: list[tuple[dict, list[dict]]] = []
     for document in ready_documents:
         active_version_id = document["active_version_id"]
         version = document.get("document_versions") or {}
-        rows = (
-            supabase.table("chunks")
-            .select(
-                "id, content, page_number, section_title, chunk_index, "
-                "document_id, document_version_id"
-            )
-            .eq("project_id", project_id)
-            .eq("document_id", document["id"])
-            .eq("document_version_id", active_version_id)
-            .order("chunk_index")
-            .limit(max_chunks_per_document)
-            .execute()
-        ).data or []
+        rows = rows_by_version.get(active_version_id, [])
 
         for row in rows:
             row["document_versions"] = {

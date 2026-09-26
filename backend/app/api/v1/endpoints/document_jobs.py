@@ -12,7 +12,7 @@ router = APIRouter()
 
 
 @router.get("/{job_id}")
-async def get_job(
+def get_job(
     job_id: UUID,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> dict:
@@ -40,7 +40,7 @@ async def get_job(
 
 
 @router.post("/{job_id}/retry", status_code=202)
-async def retry_job(
+def retry_job(
     job_id: UUID,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> dict:

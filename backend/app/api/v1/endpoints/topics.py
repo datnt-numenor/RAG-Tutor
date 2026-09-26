@@ -47,7 +47,12 @@ async def get_roadmap(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> dict:
     db = get_supabase_admin()
-    _assert_member(db, str(project_id), current_user.user_id)
+    await run_in_threadpool(
+        _assert_member,
+        db,
+        str(project_id),
+        current_user.user_id,
+    )
 
     service = get_topic_roadmap_service()
     return await run_in_threadpool(service.get_roadmap, str(project_id))
@@ -62,7 +67,12 @@ async def generate_roadmap(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> dict:
     db = get_supabase_admin()
-    _assert_owner(db, str(project_id), current_user.user_id)
+    await run_in_threadpool(
+        _assert_owner,
+        db,
+        str(project_id),
+        current_user.user_id,
+    )
     await enforce_ai_rate_limit(
         current_user.user_id,
         bucket="roadmap-generate",

@@ -40,6 +40,15 @@ class TextGenerationProvider:
         self.gemini_model = gemini_model
         self.model_name = groq_model if self.groq_api_key else gemini_model
         self._timeout = timeout_seconds
+        self._groq_client = httpx.Client(
+            headers=self._groq_headers(),
+            timeout=httpx.Timeout(timeout_seconds),
+            limits=httpx.Limits(
+                max_connections=20,
+                max_keepalive_connections=10,
+                keepalive_expiry=30.0,
+            ),
+        )
         self._gemini_client = genai.Client(
             api_key=gemini_api_key,
             http_options=types.HttpOptions(
@@ -86,11 +95,9 @@ class TextGenerationProvider:
 
     def _groq_post(self, payload: dict) -> httpx.Response:
         for attempt in range(_GROQ_MAX_RATE_LIMIT_RETRIES + 1):
-            response = httpx.post(
+            response = self._groq_client.post(
                 self._groq_url,
-                headers=self._groq_headers(),
                 json=payload,
-                timeout=self._timeout,
             )
             delay = self._groq_retry_delay(response, attempt=attempt)
             if delay is None:
@@ -100,12 +107,18 @@ class TextGenerationProvider:
             time.sleep(delay)
         raise RuntimeError("Groq retry loop exhausted")
 
-    def _groq_generate(self, prompt: str, *, json_mode: bool = False) -> str:
+    def _groq_generate(
+        self,
+        prompt: str,
+        *,
+        json_mode: bool = False,
+        max_completion_tokens: int = _GROQ_MAX_COMPLETION_TOKENS,
+    ) -> str:
         payload: dict = {
             "model": self.groq_model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.2,
-            "max_completion_tokens": _GROQ_MAX_COMPLETION_TOKENS,
+            "max_completion_tokens": max_completion_tokens,
             "reasoning_effort": "none",
         }
         if json_mode:
@@ -127,10 +140,20 @@ class TextGenerationProvider:
             raise ValueError("Gemini returned empty text")
         return str(text)
 
-    def generate(self, prompt: str, *, json_mode: bool = False) -> str:
+    def generate(
+        self,
+        prompt: str,
+        *,
+        json_mode: bool = False,
+        max_completion_tokens: int = _GROQ_MAX_COMPLETION_TOKENS,
+    ) -> str:
         if self.groq_api_key:
             try:
-                return self._groq_generate(prompt, json_mode=json_mode)
+                return self._groq_generate(
+                    prompt,
+                    json_mode=json_mode,
+                    max_completion_tokens=max_completion_tokens,
+                )
             except Exception as exc:
                 logger.warning(
                     "groq_generation_failed_using_gemini",
@@ -139,22 +162,25 @@ class TextGenerationProvider:
                 )
         return self._gemini_generate(prompt)
 
-    def _groq_stream(self, prompt: str) -> Iterator[str]:
+    def _groq_stream(
+        self,
+        prompt: str,
+        *,
+        max_completion_tokens: int = _GROQ_MAX_COMPLETION_TOKENS,
+    ) -> Iterator[str]:
         payload = {
             "model": self.groq_model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.2,
             "stream": True,
-            "max_completion_tokens": _GROQ_MAX_COMPLETION_TOKENS,
+            "max_completion_tokens": max_completion_tokens,
             "reasoning_effort": "none",
         }
         for attempt in range(_GROQ_MAX_RATE_LIMIT_RETRIES + 1):
-            with httpx.stream(
+            with self._groq_client.stream(
                 "POST",
                 self._groq_url,
-                headers=self._groq_headers(),
                 json=payload,
-                timeout=self._timeout,
             ) as response:
                 delay = self._groq_retry_delay(response, attempt=attempt)
                 if delay is None:
@@ -192,11 +218,19 @@ class TextGenerationProvider:
             if text:
                 yield str(text)
 
-    def stream(self, prompt: str) -> Iterator[str]:
+    def stream(
+        self,
+        prompt: str,
+        *,
+        max_completion_tokens: int = _GROQ_MAX_COMPLETION_TOKENS,
+    ) -> Iterator[str]:
         emitted = False
         if self.groq_api_key:
             try:
-                for text in self._groq_stream(prompt):
+                for text in self._groq_stream(
+                    prompt,
+                    max_completion_tokens=max_completion_tokens,
+                ):
                     emitted = True
                     yield text
                 if emitted:

@@ -14,7 +14,7 @@ router = APIRouter()
 
 
 @router.get("/progress/overview")
-async def progress_overview(
+def progress_overview(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> dict:
     db = get_supabase_admin()
@@ -155,7 +155,7 @@ async def progress_overview(
 
 
 @router.get("/progress/history")
-async def progress_history(
+def progress_history(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
     days: int = Query(30, ge=1, le=365),
     project_id: str | None = None,

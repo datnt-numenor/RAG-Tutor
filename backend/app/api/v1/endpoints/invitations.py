@@ -31,7 +31,7 @@ class InviteRequest(BaseModel):
 
 
 @router.post("/projects/{project_id}/invitations", status_code=status.HTTP_201_CREATED)
-async def create_invitation(
+def create_invitation(
     project_id: UUID,
     body: InviteRequest,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
@@ -108,7 +108,7 @@ async def create_invitation(
 
 
 @router.get("/projects/{project_id}/invitations")
-async def list_invitations(
+def list_invitations(
     project_id: UUID,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> list[dict]:
@@ -131,7 +131,7 @@ async def list_invitations(
 
 
 @router.delete("/projects/{project_id}/invitations/{invitation_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
-async def revoke_invitation(
+def revoke_invitation(
     project_id: UUID,
     invitation_id: UUID,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
@@ -153,7 +153,7 @@ async def revoke_invitation(
 
 
 @router.get("/invitations/{raw_token}")
-async def preview_invitation(raw_token: str) -> dict:
+def preview_invitation(raw_token: str) -> dict:
     """Return safe preview info (project name, inviter) without revealing token hash."""
     db = get_supabase_admin()
     token_hash = _hash_token(raw_token)
@@ -182,7 +182,7 @@ async def preview_invitation(raw_token: str) -> dict:
 
 
 @router.post("/invitations/{raw_token}/accept", status_code=201)
-async def accept_invitation(
+def accept_invitation(
     raw_token: str,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> dict:
@@ -216,7 +216,7 @@ async def accept_invitation(
 
 
 @router.post("/invitations/{raw_token}/reject", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
-async def reject_invitation(
+def reject_invitation(
     raw_token: str,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> Response:

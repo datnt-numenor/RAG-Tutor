@@ -171,7 +171,7 @@ async def generate_quiz(
     "/projects/{project_id}/quiz/start",
     status_code=status.HTTP_201_CREATED,
 )
-async def start_quiz_from_bank(
+def start_quiz_from_bank(
     project_id: UUID,
     body: StartQuizRequest,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
@@ -215,7 +215,7 @@ async def start_quiz_from_bank(
 
 
 @router.get("/projects/{project_id}/reviews/due")
-async def list_due_reviews(
+def list_due_reviews(
     project_id: UUID,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
     limit: int = 20,
@@ -235,7 +235,7 @@ async def list_due_reviews(
     "/projects/{project_id}/reviews/start",
     status_code=status.HTTP_201_CREATED,
 )
-async def start_due_review(
+def start_due_review(
     project_id: UUID,
     body: StartReviewRequest,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
@@ -290,7 +290,7 @@ async def start_due_review(
 
 
 @router.get("/projects/{project_id}/quiz/sessions")
-async def list_quiz_sessions(
+def list_quiz_sessions(
     project_id: UUID,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> list[dict]:
@@ -308,7 +308,7 @@ async def list_quiz_sessions(
 
 
 @router.get("/projects/{project_id}/quiz/sessions/{session_id}")
-async def get_quiz_session(
+def get_quiz_session(
     project_id: UUID,
     session_id: UUID,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
@@ -472,7 +472,7 @@ async def answer_question(
         score_ratio,
     )
     await run_in_threadpool(
-        get_progress_service().record_event,
+        get_progress_service().record_event_deferred,
         user_id=current_user.user_id,
         project_id=str(project_id),
         topic_id=question.get("topic_id"),
@@ -485,7 +485,7 @@ async def answer_question(
 
 
 @router.post("/projects/{project_id}/quiz/sessions/{session_id}/submit")
-async def submit_quiz(
+def submit_quiz(
     project_id: UUID,
     session_id: UUID,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
@@ -795,7 +795,7 @@ async def confirm_essay_scan(
         score_ratio,
     )
     await run_in_threadpool(
-        get_progress_service().record_event,
+        get_progress_service().record_event_deferred,
         user_id=current_user.user_id,
         project_id=attempt.data["project_id"],
         topic_id=question.data.get("topic_id"),
@@ -808,7 +808,7 @@ async def confirm_essay_scan(
 
 
 @router.get("/quiz-attempts/{attempt_id}/scan-url")
-async def get_scan_signed_url(
+def get_scan_signed_url(
     attempt_id: UUID,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> dict:
@@ -838,7 +838,7 @@ async def get_scan_signed_url(
     status_code=status.HTTP_204_NO_CONTENT,
     response_class=Response,
 )
-async def delete_scan_image(
+def delete_scan_image(
     attempt_id: UUID,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> Response:

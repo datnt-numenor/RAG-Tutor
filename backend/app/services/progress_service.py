@@ -4,7 +4,12 @@ from datetime import date, datetime, time, timedelta, timezone
 from functools import lru_cache
 from zoneinfo import ZoneInfo
 
+import structlog
+
 from app.core.database import get_supabase_admin
+
+
+logger = structlog.get_logger()
 
 
 class ProgressService:
@@ -96,6 +101,65 @@ class ProgressService:
                 user_id=user_id,
                 project_id=project_id,
                 snapshot_date=snapshot_date,
+            )
+
+        return event
+
+    def record_event_deferred(
+        self,
+        *,
+        user_id: str,
+        project_id: str,
+        event_type: str,
+        source_id: str | None = None,
+        topic_id: str | None = None,
+        duration_seconds: int | None = None,
+        metadata: dict | None = None,
+        idempotency_key: str | None = None,
+        occurred_at: datetime | None = None,
+    ) -> dict | None:
+        """Record an event now and rebuild its snapshot outside the request."""
+        event_time = occurred_at or datetime.now(timezone.utc)
+        event = self.record_event(
+            user_id=user_id,
+            project_id=project_id,
+            event_type=event_type,
+            source_id=source_id,
+            topic_id=topic_id,
+            duration_seconds=duration_seconds,
+            metadata=metadata,
+            idempotency_key=idempotency_key,
+            occurred_at=event_time,
+            rebuild=False,
+        )
+        event_occurred_at = (
+            str(event.get("occurred_at"))
+            if event and event.get("occurred_at")
+            else event_time.isoformat()
+        )
+
+        try:
+            from app.workers.progress_worker import rebuild_progress_snapshot
+
+            rebuild_progress_snapshot.delay(
+                user_id,
+                project_id,
+                event_occurred_at,
+            )
+        except Exception as exc:
+            logger.warning(
+                "progress_snapshot_dispatch_failed_rebuilding_inline",
+                user_id=user_id,
+                project_id=project_id,
+                error_type=exc.__class__.__name__,
+            )
+            parsed_time = datetime.fromisoformat(
+                event_occurred_at.replace("Z", "+00:00")
+            )
+            self.rebuild_snapshot(
+                user_id=user_id,
+                project_id=project_id,
+                snapshot_date=self._local_date_for(user_id, parsed_time),
             )
 
         return event

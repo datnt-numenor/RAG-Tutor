@@ -1,5 +1,6 @@
 import httpx
 import pytest
+from types import SimpleNamespace
 
 from app.services.ai_provider import TextGenerationProvider
 
@@ -10,6 +11,7 @@ def make_provider(*, groq: bool = True) -> TextGenerationProvider:
     provider.groq_model = "groq-model"
     provider.gemini_model = "gemini-model"
     provider._timeout = 60.0
+    provider._groq_client = SimpleNamespace()
     return provider
 
 
@@ -27,10 +29,7 @@ def test_groq_post_retries_rate_limit_using_retry_after(monkeypatch):
         ]
     )
     sleeps: list[float] = []
-    monkeypatch.setattr(
-        "app.services.ai_provider.httpx.post",
-        lambda *a, **k: next(responses),
-    )
+    provider._groq_client.post = lambda *a, **k: next(responses)
     monkeypatch.setattr("app.services.ai_provider.time.sleep", sleeps.append)
 
     response = provider._groq_post({"model": "groq-model"})
@@ -42,14 +41,11 @@ def test_groq_post_retries_rate_limit_using_retry_after(monkeypatch):
 def test_groq_post_stops_retrying_after_limit(monkeypatch):
     provider = make_provider()
     request = httpx.Request("POST", provider._groq_url)
-    monkeypatch.setattr(
-        "app.services.ai_provider.httpx.post",
-        lambda *a, **k: httpx.Response(
+    provider._groq_client.post = lambda *a, **k: httpx.Response(
             429,
             headers={"retry-after": "0"},
             request=request,
-        ),
-    )
+        )
     monkeypatch.setattr("app.services.ai_provider.time.sleep", lambda _: None)
 
     with pytest.raises(httpx.HTTPStatusError):
@@ -76,9 +72,33 @@ def test_groq_generate_caps_output_and_disables_reasoning(monkeypatch):
     assert captured["reasoning_effort"] == "none"
 
 
+def test_groq_generate_accepts_a_smaller_task_specific_cap(monkeypatch):
+    provider = make_provider()
+    captured: dict = {}
+    request = httpx.Request("POST", provider._groq_url)
+
+    def fake_post(payload):
+        captured.update(payload)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "ok"}}]},
+            request=request,
+        )
+
+    monkeypatch.setattr(provider, "_groq_post", fake_post)
+
+    provider._groq_generate("prompt", max_completion_tokens=1024)
+
+    assert captured["max_completion_tokens"] == 1024
+
+
 def test_generate_uses_groq_when_configured(monkeypatch):
     provider = make_provider()
-    monkeypatch.setattr(provider, "_groq_generate", lambda prompt, json_mode=False: "groq")
+    monkeypatch.setattr(
+        provider,
+        "_groq_generate",
+        lambda prompt, json_mode=False, max_completion_tokens=2048: "groq",
+    )
     monkeypatch.setattr(provider, "_gemini_generate", lambda prompt: "gemini")
 
     assert provider.generate("prompt") == "groq"
@@ -99,7 +119,7 @@ def test_generate_falls_back_to_gemini_when_groq_fails(monkeypatch):
 def test_stream_falls_back_before_first_groq_token(monkeypatch):
     provider = make_provider()
 
-    def fail_stream(prompt):
+    def fail_stream(prompt, **kwargs):
         raise RuntimeError("transport failed")
         yield
 
@@ -120,7 +140,7 @@ def test_empty_stream_falls_back_to_non_streaming_gemini(monkeypatch):
 def test_stream_does_not_retry_after_partial_output(monkeypatch):
     provider = make_provider()
 
-    def partial_stream(prompt):
+    def partial_stream(prompt, **kwargs):
         yield "partial"
         raise RuntimeError("interrupted")
 

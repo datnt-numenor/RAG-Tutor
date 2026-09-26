@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from time import perf_counter
+
+import structlog
 
 from app.core.database import get_supabase_admin
 from app.services.ai_provider import TextGenerationProvider, get_text_provider
 from app.services.embedding_service import EmbeddingService
+
+
+logger = structlog.get_logger()
+_CHAT_MAX_COMPLETION_TOKENS = 1024
 
 
 class RAGService:
@@ -26,8 +33,11 @@ class RAGService:
         top_k: int = 5,
         threshold: float = 0.30,
     ) -> list[dict]:
+        started = perf_counter()
         query_embedding = self.embedding_service.embed(query)
+        embedding_ms = (perf_counter() - started) * 1000
 
+        retrieval_started = perf_counter()
         response = self.supabase.rpc(
             "match_chunks",
             {
@@ -37,6 +47,17 @@ class RAGService:
                 "match_threshold": threshold,
             },
         ).execute()
+
+        logger.info(
+            "rag_retrieval_complete",
+            project_id=project_id,
+            embedding_ms=round(embedding_ms, 2),
+            database_ms=round(
+                (perf_counter() - retrieval_started) * 1000,
+                2,
+            ),
+            retrieved_count=len(response.data or []),
+        )
 
         return response.data or []
 
@@ -76,12 +97,27 @@ Yêu cầu:
     def generate_answer(self, question: str, context: str) -> str:
         prompt = self.build_prompt(question=question, context=context)
 
-        return self.provider.generate(prompt)
+        started = perf_counter()
+        answer = self.provider.generate(
+            prompt,
+            max_completion_tokens=_CHAT_MAX_COMPLETION_TOKENS,
+        )
+        logger.info(
+            "rag_generation_complete",
+            generation_ms=round((perf_counter() - started) * 1000, 2),
+            context_chars=len(context),
+            answer_chars=len(answer),
+            model=self.provider.model_name,
+        )
+        return answer
 
     def stream_generate_answer(self, question: str, context: str):
         """Yield text deltas from Gemini Interactions streaming."""
         prompt = self.build_prompt(question=question, context=context)
-        yield from self.provider.stream(prompt)
+        yield from self.provider.stream(
+            prompt,
+            max_completion_tokens=_CHAT_MAX_COMPLETION_TOKENS,
+        )
 
     def build_sources(self, results: list[dict]) -> list[dict]:
         sources: list[dict] = []

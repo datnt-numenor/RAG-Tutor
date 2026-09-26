@@ -30,7 +30,7 @@ def _membership(db, project_id: str, user_id: str) -> dict:
 
 
 @router.get("/projects/{project_id}/schedules")
-async def list_schedules(
+def list_schedules(
     project_id: UUID,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> list[dict]:
@@ -88,7 +88,7 @@ async def generate_schedules(
 
 
 @router.post("/schedules/{schedule_id}/accept")
-async def accept_schedule(
+def accept_schedule(
     schedule_id: UUID,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> dict:
@@ -117,7 +117,7 @@ async def accept_schedule(
 
 
 @router.post("/schedules/{schedule_id}/reject")
-async def reject_schedule(
+def reject_schedule(
     schedule_id: UUID,
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> dict:
@@ -188,7 +188,7 @@ async def complete_schedule(
         )
 
     await run_in_threadpool(
-        get_progress_service().record_event,
+        get_progress_service().record_event_deferred,
         user_id=current_user.user_id,
         project_id=schedule.data["project_id"],
         topic_id=schedule.data.get("topic_id"),
