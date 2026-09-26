@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { BookOpen, ArrowRight, Sparkles } from "lucide-react";
+import { BookOpen, ArrowRight, PlayCircle, Sparkles } from "lucide-react";
 
 export default function Home() {
   return (
@@ -41,19 +41,23 @@ export default function Home() {
 
               <div className="mt-9 flex flex-wrap gap-3">
                 <Link
-                  href="/login"
+                  href="/demo"
                   className="inline-flex items-center gap-2 rounded-2xl bg-[#b9634c] px-6 py-3.5 font-semibold text-white shadow-lg shadow-[#b9634c]/20 transition hover:bg-[#a65440]"
                 >
-                  Bắt đầu học
+                  <PlayCircle size={18} />
+                  Xem demo ngay
                   <ArrowRight size={18} />
                 </Link>
                 <Link
-                  href="/signup"
+                  href="/login"
                   className="rounded-2xl border border-[#8f4738]/15 bg-white/70 px-6 py-3.5 font-semibold text-[#8f4738] transition hover:bg-white"
                 >
-                  Tạo tài khoản
+                  Đăng nhập bản đầy đủ
                 </Link>
               </div>
+              <p className="mt-4 text-sm text-[#7d7167]">
+                Demo dùng dữ liệu mẫu, không cần tài khoản và không gửi dữ liệu lên máy chủ.
+              </p>
             </div>
 
             <div className="relative mx-auto w-full max-w-md">

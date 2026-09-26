@@ -20,7 +20,10 @@ const caveat = Caveat({
 });
 
 export const metadata: Metadata = {
-  title: "RAGTutor — AI Study Assistant",
+  title: {
+    default: "RAGTutor — AI Study Assistant",
+    template: "%s | RAGTutor",
+  },
   description:
     "Học từ chính tài liệu của bạn với RAG, trích dẫn nguồn và trợ lý AI.",
 };
