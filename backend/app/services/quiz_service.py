@@ -215,7 +215,8 @@ CONTEXT:
         existing_questions = self._existing_question_texts(project_id)
         accepted_questions = list(existing_questions)
 
-        inserted: list[dict] = []
+        selected_candidates: list[dict] = []
+        question_rows: list[dict] = []
         for candidate in candidates:
             question_text = candidate["question_text"]
             is_duplicate = any(
@@ -229,7 +230,7 @@ CONTEXT:
             topic_name = str(item.get("topic_name") or "").strip()
             topic_id = topic_lookup.get(topic_name.casefold()) if topic_name else None
 
-            row = {
+            question_rows.append({
                 "project_id": project_id,
                 "topic_id": topic_id,
                 "question_type": question_type,
@@ -247,31 +248,50 @@ CONTEXT:
                 "status": "active",
                 "model_name": self.gemini_model,
                 "prompt_version": "quiz-generate-v2",
-            }
-            result = self.supabase.table("questions").insert(row).execute()
-            question = result.data[0]
-
-            source_rows = [
-                {
-                    "question_id": question["id"],
-                    "chunk_id": chunks[number - 1]["id"],
-                }
-                for number in candidate["source_numbers"]
-            ]
-            self.supabase.table("question_sources").insert(source_rows).execute()
-
-            inserted.append(question)
+            })
+            selected_candidates.append(candidate)
             accepted_questions.append(question_text)
 
-            if len(inserted) >= count:
+            if len(question_rows) >= count:
                 break
 
-        if not inserted:
+        if not question_rows:
             raise ValueError(
                 "All generated questions were removed as semantic duplicates"
             )
 
-        return inserted
+        inserted = (
+            self.supabase.table("questions")
+            .insert(question_rows)
+            .execute()
+        ).data or []
+        if len(inserted) != len(selected_candidates):
+            raise RuntimeError("Question insert returned an unexpected row count")
+
+        inserted_by_text = {
+            str(question["question_text"]): question
+            for question in inserted
+        }
+        ordered_inserted = [
+            inserted_by_text[candidate["question_text"]]
+            for candidate in selected_candidates
+        ]
+
+        source_rows = [
+            {
+                "question_id": question["id"],
+                "chunk_id": chunks[number - 1]["id"],
+            }
+            for question, candidate in zip(
+                ordered_inserted,
+                selected_candidates,
+            )
+            for number in candidate["source_numbers"]
+        ]
+        if source_rows:
+            self.supabase.table("question_sources").insert(source_rows).execute()
+
+        return ordered_inserted
 
     def grade_essay(self, question: dict, user_answer: str) -> dict:
         source_rows = (

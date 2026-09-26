@@ -3,19 +3,26 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    MALLOC_ARENA_MAX=2 \
+    OMP_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1 \
+    OPENBLAS_NUM_THREADS=1 \
+    NUMEXPR_NUM_THREADS=1 \
+    TOKENIZERS_PARALLELISM=false \
     HF_HOME=/home/app/.cache/huggingface
 
 WORKDIR /app
 
+COPY requirements.txt ./
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential curl \
+    && apt-get install -y --no-install-recommends build-essential \
+    && python -m pip install --upgrade pip \
+    && pip install -r requirements.txt \
+    && apt-get purge -y --auto-remove build-essential \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system app \
-    && useradd --system --gid app --create-home app
-
-COPY requirements.txt ./
-RUN python -m pip install --upgrade pip \
-    && pip install -r requirements.txt \
+    && useradd --system --gid app --create-home app \
     && mkdir -p "$HF_HOME" \
     && chown -R app:app /home/app
 

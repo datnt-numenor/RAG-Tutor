@@ -99,32 +99,41 @@ def _capture_impacted_derived_ids(
 
 
 def _retire_orphaned_questions(db, question_ids: set[str]) -> None:
-    for question_id in question_ids:
-        remaining = (
-            db.table("question_sources")
-            .select("chunk_id", count="exact")
-            .eq("question_id", question_id)
-            .limit(1)
+    if not question_ids:
+        return
+
+    remaining = (
+        db.table("question_sources")
+        .select("question_id")
+        .in_("question_id", sorted(question_ids))
+        .execute()
+    ).data or []
+    linked_ids = {row["question_id"] for row in remaining}
+    orphaned_ids = sorted(question_ids - linked_ids)
+    if orphaned_ids:
+        (
+            db.table("questions")
+            .update({"status": "retired"})
+            .in_("id", orphaned_ids)
             .execute()
         )
-        if (remaining.count or 0) == 0:
-            db.table("questions").update({
-                "status": "retired",
-            }).eq("id", question_id).execute()
 
 
 def _remove_orphaned_topics(db, topic_ids: set[str]) -> None:
-    for topic_id in topic_ids:
-        remaining = (
-            db.table("topic_sources")
-            .select("chunk_id", count="exact")
-            .eq("topic_id", topic_id)
-            .limit(1)
-            .execute()
-        )
-        if (remaining.count or 0) == 0:
-            # Schedules retain their history because topic_id is ON DELETE SET NULL.
-            db.table("topics").delete().eq("id", topic_id).execute()
+    if not topic_ids:
+        return
+
+    remaining = (
+        db.table("topic_sources")
+        .select("topic_id")
+        .in_("topic_id", sorted(topic_ids))
+        .execute()
+    ).data or []
+    linked_ids = {row["topic_id"] for row in remaining}
+    orphaned_ids = sorted(topic_ids - linked_ids)
+    if orphaned_ids:
+        # Schedules retain their history because topic_id is ON DELETE SET NULL.
+        db.table("topics").delete().in_("id", orphaned_ids).execute()
 
 
 @celery_app.task(bind=True, max_retries=4, name="workers.delete_document")

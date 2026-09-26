@@ -31,6 +31,7 @@ import {
 export function ProjectRoadmap({ projectId }: { projectId: string }) {
   const queryClient = useQueryClient();
   const [roadmapJobId, setRoadmapJobId] = useState<string | null>(null);
+  const [roadmapJobTimedOut, setRoadmapJobTimedOut] = useState(false);
   const project = useQuery({
     queryKey: ["project", projectId],
     queryFn: () => getProject(projectId),
@@ -81,6 +82,7 @@ export function ProjectRoadmap({ projectId }: { projectId: string }) {
   const generate = useMutation({
     mutationFn: () => generateRoadmap(projectId),
     onSuccess: (result) => {
+      setRoadmapJobTimedOut(false);
       setRoadmapJobId(result.job_id);
     },
   });
@@ -91,7 +93,8 @@ export function ProjectRoadmap({ projectId }: { projectId: string }) {
     enabled: Boolean(roadmapJobId),
     refetchInterval: (query) => {
       const state = query.state.data?.status;
-      return !state || ["pending", "started", "retry"].includes(state)
+      return !roadmapJobTimedOut &&
+        (!state || ["pending", "started", "retry"].includes(state))
         ? 2000
         : false;
     },
@@ -102,8 +105,24 @@ export function ProjectRoadmap({ projectId }: { projectId: string }) {
     void queryClient.invalidateQueries({ queryKey: ["roadmap", projectId] });
   }, [projectId, queryClient, roadmapJob.data?.status]);
 
+  useEffect(() => {
+    if (
+      !roadmapJobId ||
+      roadmapJob.data?.status === "success" ||
+      roadmapJob.data?.status === "failure"
+    ) {
+      return;
+    }
+    const timer = window.setTimeout(
+      () => setRoadmapJobTimedOut(true),
+      5 * 60 * 1000,
+    );
+    return () => window.clearTimeout(timer);
+  }, [roadmapJob.data?.status, roadmapJobId]);
+
   const roadmapJobActive = Boolean(
     roadmapJobId &&
+      !roadmapJobTimedOut &&
       (!roadmapJob.data?.status ||
         ["pending", "started", "retry"].includes(roadmapJob.data.status)),
   );
@@ -251,9 +270,13 @@ export function ProjectRoadmap({ projectId }: { projectId: string }) {
             </button>
           </div>
 
-          {(generate.isError || roadmapJob.data?.status === "failure") && (
+          {(generate.isError ||
+            roadmapJob.data?.status === "failure" ||
+            roadmapJobTimedOut) && (
             <div className="mb-4 rounded-xl bg-red-50 p-3 text-sm text-red-700">
-              Không generate được roadmap. Project cần document đã ingest xong.
+              {roadmapJobTimedOut
+                ? "Roadmap xử lý quá 5 phút. Bạn có thể thử lại mà không tạo job trùng."
+                : "Không generate được roadmap. Project cần document đã ingest xong."}
             </div>
           )}
 

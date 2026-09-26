@@ -22,12 +22,20 @@ class OCRService:
         azure_endpoint: str | None = None,
         azure_key: str | None = None,
         timeout_seconds: float = 60.0,
+        azure_client: httpx.Client | None = None,
     ):
         self.provider = provider
         self.model = provider.model_name
         self.azure_endpoint = (azure_endpoint or "").strip().rstrip("/")
         self.azure_key = (azure_key or "").strip()
         self.timeout_seconds = timeout_seconds
+        self._azure_client = azure_client or httpx.Client(
+            timeout=timeout_seconds,
+            limits=httpx.Limits(
+                max_connections=10,
+                max_keepalive_connections=5,
+            ),
+        )
 
     def _parse_json(self, text: str) -> dict:
         clean = re.sub(r"^\s*\x60\x60\x60(?:json)?\s*", "", text.strip(), flags=re.I)
@@ -35,7 +43,7 @@ class OCRService:
         return json.loads(clean)
 
     def _extract_with_azure(self, image_bytes: bytes, mime_type: str) -> dict:
-        response = httpx.post(
+        response = self._azure_client.post(
             f"{self.azure_endpoint}/computervision/imageanalysis:analyze",
             params={"api-version": "2024-02-01", "features": "read"},
             headers={
@@ -43,7 +51,6 @@ class OCRService:
                 "Content-Type": mime_type,
             },
             content=image_bytes,
-            timeout=self.timeout_seconds,
         )
         response.raise_for_status()
         blocks = (response.json().get("readResult") or {}).get("blocks") or []

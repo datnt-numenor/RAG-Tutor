@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
@@ -13,18 +15,22 @@ from starlette.concurrency import run_in_threadpool
 router = APIRouter()
 
 
+def _execute(query):
+    return query.execute()
+
+
 @router.get("/progress/overview")
-def progress_overview(
+async def progress_overview(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> dict:
     db = get_supabase_admin()
 
-    memberships = (
+    membership_query = (
         db.table("project_members")
         .select("project_id, projects(id, name, status)")
         .eq("user_id", current_user.user_id)
-        .execute()
     )
+    memberships = await run_in_threadpool(_execute, membership_query)
     project_ids = [row["project_id"] for row in memberships.data]
 
     if not project_ids:
@@ -42,57 +48,62 @@ def progress_overview(
             "project_breakdown": [],
         }
 
-    documents = (
+    document_query = (
         db.table("documents")
         .select("id, project_id, active_version_id")
         .in_("project_id", project_ids)
         .neq("status", "deleting")
-        .execute()
     )
 
-    sessions = (
+    session_query = (
         db.table("chat_sessions")
         .select("id, project_id")
         .in_("project_id", project_ids)
         .eq("user_id", current_user.user_id)
-        .execute()
     )
-    session_ids = [row["id"] for row in sessions.data]
 
-    messages = []
-    if session_ids:
-        messages = (
-            db.table("chat_messages")
-            .select("id, session_id, role")
-            .in_("session_id", session_ids)
-            .execute()
-        ).data
-
-    quiz_sessions = (
+    quiz_session_query = (
         db.table("quiz_sessions")
         .select("id, project_id, status, total_score, max_score")
         .in_("project_id", project_ids)
         .eq("user_id", current_user.user_id)
-        .execute()
     )
 
-    attempts = (
+    attempt_query = (
         db.table("quiz_attempts")
         .select("id, project_id, score, max_score_snapshot, is_correct")
         .in_("project_id", project_ids)
         .eq("user_id", current_user.user_id)
         .eq("status", "graded")
-        .execute()
     )
 
-    reviews = (
+    review_query = (
         db.table("review_states")
         .select("id, project_id, due_at")
         .in_("project_id", project_ids)
         .eq("user_id", current_user.user_id)
         .lte("due_at", datetime.now(timezone.utc).isoformat())
-        .execute()
     )
+
+    documents, sessions, quiz_sessions, attempts, reviews = await asyncio.gather(
+        run_in_threadpool(_execute, document_query),
+        run_in_threadpool(_execute, session_query),
+        run_in_threadpool(_execute, quiz_session_query),
+        run_in_threadpool(_execute, attempt_query),
+        run_in_threadpool(_execute, review_query),
+    )
+
+    session_ids = [row["id"] for row in sessions.data]
+    messages = []
+    if session_ids:
+        message_query = (
+            db.table("chat_messages")
+            .select("id, session_id, role")
+            .in_("session_id", session_ids)
+        )
+        messages = (
+            await run_in_threadpool(_execute, message_query)
+        ).data
 
     ratios: list[float] = []
     for attempt in attempts.data:
@@ -100,35 +111,34 @@ def progress_overview(
         if max_score > 0:
             ratios.append(float(attempt.get("score") or 0) / max_score)
 
+    document_counts: dict[str, list[int]] = defaultdict(lambda: [0, 0])
+    for item in documents.data:
+        counts = document_counts[item["project_id"]]
+        counts[0] += 1
+        counts[1] += int(bool(item.get("active_version_id")))
+    quiz_counts = Counter(item["project_id"] for item in quiz_sessions.data)
+    chat_counts = Counter(item["project_id"] for item in sessions.data)
+    attempt_counts = Counter(item["project_id"] for item in attempts.data)
+    correct_counts = Counter(
+        item["project_id"]
+        for item in attempts.data
+        if item.get("is_correct") is True
+    )
+
     project_breakdown: list[dict] = []
     for membership in memberships.data:
         project = membership.get("projects") or {}
         project_id = membership["project_id"]
-        project_documents = [
-            item for item in documents.data if item["project_id"] == project_id
-        ]
-        project_quizzes = [
-            item for item in quiz_sessions.data if item["project_id"] == project_id
-        ]
-        project_attempts = [
-            item for item in attempts.data if item["project_id"] == project_id
-        ]
-        project_chat_sessions = [
-            item for item in sessions.data if item["project_id"] == project_id
-        ]
+        project_documents, ready_documents = document_counts[project_id]
         project_breakdown.append({
             "project_id": project_id,
             "name": project.get("name", "Project"),
-            "documents": len(project_documents),
-            "ready_documents": sum(
-                1 for item in project_documents if item.get("active_version_id")
-            ),
-            "chat_sessions": len(project_chat_sessions),
-            "quiz_sessions": len(project_quizzes),
-            "quiz_attempts": len(project_attempts),
-            "quiz_correct": sum(
-                1 for item in project_attempts if item.get("is_correct") is True
-            ),
+            "documents": project_documents,
+            "ready_documents": ready_documents,
+            "chat_sessions": chat_counts[project_id],
+            "quiz_sessions": quiz_counts[project_id],
+            "quiz_attempts": attempt_counts[project_id],
+            "quiz_correct": correct_counts[project_id],
         })
 
     return {

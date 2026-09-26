@@ -10,6 +10,14 @@ from app.core.config import get_settings
 
 logger = structlog.get_logger()
 
+_INCREMENT_WITH_EXPIRY = """
+local count = redis.call('INCR', KEYS[1])
+if count == 1 then
+  redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return count
+"""
+
 
 @lru_cache
 def get_rate_limit_redis() -> Redis:
@@ -31,9 +39,12 @@ async def enforce_ai_rate_limit(
     key = f"ragtutor:rate:{bucket}:{user_id}"
 
     try:
-        count = await redis.incr(key)
-        if count == 1:
-            await redis.expire(key, window_seconds)
+        count = await redis.eval(
+            _INCREMENT_WITH_EXPIRY,
+            1,
+            key,
+            window_seconds,
+        )
     except Exception as exc:
         logger.warning(
             "rate_limit_backend_unavailable",

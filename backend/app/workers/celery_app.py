@@ -27,6 +27,9 @@ def make_celery() -> Celery:
         timezone="Asia/Ho_Chi_Minh",
         enable_utc=True,
         task_track_started=True,
+        # Job results are only polled by the UI for a few minutes. Expiring
+        # them quickly keeps the shared Redis instance from growing forever.
+        result_expires=3600,
         # Do not acknowledge jobs before they finish. If a worker process is
         # killed (for example by a memory limit during model startup), Celery
         # can put the job back on the queue instead of leaving the database job

@@ -16,8 +16,14 @@ from app.workers.celery_app import celery_app
 logger = structlog.get_logger()
 
 
-@celery_app.task(name="workers.summarize_document")
-def summarize_document(version_id: str) -> None:
+@celery_app.task(
+    bind=True,
+    max_retries=2,
+    soft_time_limit=120,
+    time_limit=150,
+    name="workers.summarize_document",
+)
+def summarize_document(self, version_id: str) -> None:
     db = get_supabase_admin()
     started = perf_counter()
 
@@ -63,6 +69,24 @@ def summarize_document(version_id: str) -> None:
             duration_ms=round((perf_counter() - started) * 1000, 2),
         )
     except Exception as exc:
+        if self.request.retries < self.max_retries:
+            db.table("document_versions").update(
+                {
+                    "summary": None,
+                    "summary_status": "queued",
+                }
+            ).eq("id", version_id).execute()
+            logger.warning(
+                "document_summary_retrying",
+                version_id=version_id,
+                error=exc.__class__.__name__,
+                retry=self.request.retries,
+            )
+            raise self.retry(
+                exc=exc,
+                countdown=10 * (self.request.retries + 1),
+            )
+
         db.table("document_versions").update(
             {
                 "summary": None,

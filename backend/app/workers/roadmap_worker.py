@@ -15,6 +15,8 @@ logger = structlog.get_logger()
 @celery_app.task(
     bind=True,
     max_retries=2,
+    soft_time_limit=180,
+    time_limit=210,
     name="workers.generate_topic_roadmap",
 )
 def generate_topic_roadmap(self, project_id: str) -> dict:
