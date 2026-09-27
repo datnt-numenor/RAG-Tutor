@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from time import perf_counter
+from uuid import uuid4
 
 import structlog
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.v1.router import api_router
 from app.core.config import get_settings
-from app.core.database import connect_db, disconnect_db
+from app.core.database import get_supabase_admin
+from app.core.rate_limit import get_rate_limit_redis
+from starlette.concurrency import run_in_threadpool
 
 logger = structlog.get_logger()
 
@@ -19,9 +23,7 @@ logger = structlog.get_logger()
 async def lifespan(app: FastAPI):
     settings = get_settings()
     logger.info("Starting RAGTutor API", env=settings.app_env)
-    await connect_db()
     yield
-    await disconnect_db()
     logger.info("Shutting down RAGTutor API")
 
 
@@ -40,16 +42,81 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.allowed_origins,
+        allow_origin_regex=settings.allowed_origin_regex,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def request_logging_middleware(request: Request, call_next):
+        request_id = request.headers.get("X-Request-ID") or str(uuid4())
+        request.state.request_id = request_id
+        started = perf_counter()
+
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            logger.exception(
+                "request_failed",
+                request_id=request_id,
+                method=request.method,
+                path=request.url.path,
+                error=exc.__class__.__name__,
+            )
+            raise
+
+        duration_ms = round((perf_counter() - started) * 1000, 2)
+        response.headers["X-Request-ID"] = request_id
+        logger.info(
+            "request_complete",
+            request_id=request_id,
+            method=request.method,
+            path=request.url.path,
+            status_code=response.status_code,
+            duration_ms=duration_ms,
+        )
+        return response
 
     app.include_router(api_router, prefix="/api/v1")
 
     @app.get("/health", tags=["health"])
     async def health_check() -> JSONResponse:
         return JSONResponse({"status": "ok", "version": "1.0.0"})
+
+    @app.get("/health/ready", tags=["health"])
+    async def readiness_check() -> JSONResponse:
+        checks: dict[str, str] = {}
+
+        try:
+            await run_in_threadpool(
+                lambda: (
+                    get_supabase_admin()
+                    .table("users")
+                    .select("id")
+                    .limit(1)
+                    .execute()
+                )
+            )
+            checks["supabase"] = "ok"
+        except Exception as exc:
+            checks["supabase"] = f"error:{exc.__class__.__name__}"
+
+        try:
+            pong = await get_rate_limit_redis().ping()
+            checks["redis"] = "ok" if pong else "error:no-pong"
+        except Exception as exc:
+            checks["redis"] = f"error:{exc.__class__.__name__}"
+
+        ready = all(value == "ok" for value in checks.values())
+        return JSONResponse(
+            {
+                "status": "ready" if ready else "not_ready",
+                "version": "1.0.0",
+                "checks": checks,
+            },
+            status_code=200 if ready else 503,
+        )
 
     return app
 

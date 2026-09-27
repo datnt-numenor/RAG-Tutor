@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from typing import Annotated
 from uuid import UUID
 
 import aiofiles
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from app.core.auth import AuthenticatedUser, get_current_user
 from app.core.database import get_supabase_admin
@@ -15,6 +17,27 @@ router = APIRouter()
 
 ALLOWED_MIME = {"application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
+
+
+def _validate_document_magic(content: bytes, mime_type: str) -> bool:
+    if mime_type == "application/pdf":
+        return content.startswith(b"%PDF-")
+
+    if mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        # DOCX is an OOXML ZIP container.
+        return content.startswith(b"PK\x03\x04")
+
+    return False
+
+
+def _safe_filename(filename: str | None, fallback: str = "document") -> str:
+    raw = (filename or fallback).replace("\\", "/").split("/")[-1].strip()
+    if not raw:
+        raw = fallback
+
+    safe = re.sub(r"[^A-Za-z0-9._()\-\u00C0-\u024F\u1E00-\u1EFF ]+", "_", raw)
+    safe = re.sub(r"\s+", " ", safe).strip(" .")
+    return safe[:180] or fallback
 
 
 def _assert_owner(db, project_id: str, user_id: str) -> None:
@@ -45,74 +68,251 @@ async def upload_document(
 ) -> dict:
     """Upload PDF/DOCX, create document record + ingest job. Returns 202 immediately."""
     db = get_supabase_admin()
-    _assert_owner(db, str(project_id), current_user.user_id)
+    await run_in_threadpool(
+        _assert_owner, db, str(project_id), current_user.user_id
+    )
 
-    # Validate MIME
     content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="File is empty")
     if len(content) > MAX_FILE_SIZE:
         raise HTTPException(status_code=413, detail="File too large (max 50 MB)")
     if file.content_type not in ALLOWED_MIME:
         raise HTTPException(status_code=415, detail="Only PDF and DOCX are supported")
+    if not _validate_document_magic(content, file.content_type):
+        raise HTTPException(
+            status_code=415,
+            detail="File content does not match its declared PDF/DOCX type",
+        )
 
+    filename = _safe_filename(file.filename)
     sha256 = hashlib.sha256(content).hexdigest()
 
     # Create document record
-    doc_res = db.table("documents").insert({
+    doc_query = db.table("documents").insert({
         "project_id": str(project_id),
         "created_by": current_user.user_id,
-        "display_name": file.filename,
+        "display_name": filename,
         "status": "active",
-    }).execute()
+    })
+    doc_res = await run_in_threadpool(doc_query.execute)
     document_id = doc_res.data[0]["id"]
 
     # Determine version number
-    prev_versions = (
+    prev_versions_query = (
         db.table("document_versions")
         .select("version_number")
         .eq("document_id", document_id)
         .order("version_number", desc=True)
         .limit(1)
-        .execute()
     )
+    prev_versions = await run_in_threadpool(prev_versions_query.execute)
     version_number = (prev_versions.data[0]["version_number"] + 1) if prev_versions.data else 1
 
-    storage_path = f"projects/{project_id}/documents/{document_id}/versions/v{version_number}/{file.filename}"
+    storage_path = f"projects/{project_id}/documents/{document_id}/versions/v{version_number}/{filename}"
 
     # Upload to Supabase Storage
-    db.storage.from_("documents").upload(storage_path, content, {"content-type": file.content_type})
+    await run_in_threadpool(
+        db.storage.from_("documents").upload,
+        storage_path,
+        content,
+        {"content-type": file.content_type},
+    )
 
     # Create version record
-    ver_res = db.table("document_versions").insert({
+    version_query = db.table("document_versions").insert({
         "document_id": document_id,
         "project_id": str(project_id),
         "version_number": version_number,
         "storage_path": storage_path,
-        "original_filename": file.filename,
+        "original_filename": filename,
         "mime_type": file.content_type,
         "file_size": len(content),
         "sha256": sha256,
         "status": "pending",
-    }).execute()
+    })
+    ver_res = await run_in_threadpool(version_query.execute)
     version_id = ver_res.data[0]["id"]
 
     # Create ingest job
-    job_res = db.table("document_jobs").insert({
+    job_query = db.table("document_jobs").insert({
+        "project_id": str(project_id),
         "document_id": document_id,
         "document_version_id": version_id,
         "job_type": "ingest",
         "status": "queued",
         "stage": "store",
         "max_attempts": 3,
-    }).execute()
+    })
+    job_res = await run_in_threadpool(job_query.execute)
     job_id = job_res.data[0]["id"]
 
-    # TODO: dispatch Celery task: ingest_document.delay(document_id, version_id, job_id)
+    from app.workers.ingest_worker import ingest_document
+
+    try:
+        await run_in_threadpool(
+            ingest_document.delay, document_id, version_id, job_id
+        )
+    except Exception as exc:
+        failure_query = db.table("document_jobs").update({
+            "status": "failed",
+            "last_error": f"Failed to dispatch ingest worker: {exc}",
+        }).eq("id", job_id)
+        await run_in_threadpool(failure_query.execute)
+        raise HTTPException(
+            status_code=503,
+            detail="Document uploaded but ingestion worker could not be queued",
+        ) from exc
 
     return {"document_id": document_id, "version_id": version_id, "job_id": job_id}
 
 
+
+@router.post(
+    "/projects/{project_id}/documents/{document_id}/versions",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def upload_document_version(
+    project_id: UUID,
+    document_id: UUID,
+    file: UploadFile = File(...),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    """Upload a new version for an existing document and ingest it asynchronously."""
+    db = get_supabase_admin()
+    await run_in_threadpool(
+        _assert_owner, db, str(project_id), current_user.user_id
+    )
+
+    document_query = (
+        db.table("documents")
+        .select("id, status")
+        .eq("id", str(document_id))
+        .eq("project_id", str(project_id))
+        .maybe_single()
+    )
+    document = await run_in_threadpool(document_query.execute)
+    if not document.data:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if document.data["status"] == "deleting":
+        raise HTTPException(status_code=409, detail="Document is being deleted")
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="File is empty")
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="File too large (max 50 MB)")
+    if file.content_type not in ALLOWED_MIME:
+        raise HTTPException(status_code=415, detail="Only PDF and DOCX are supported")
+    if not _validate_document_magic(content, file.content_type):
+        raise HTTPException(
+            status_code=415,
+            detail="File content does not match its declared PDF/DOCX type",
+        )
+
+    sha256 = hashlib.sha256(content).hexdigest()
+
+    duplicate_query = (
+        db.table("document_versions")
+        .select("id, version_number")
+        .eq("document_id", str(document_id))
+        .eq("sha256", sha256)
+        .maybe_single()
+    )
+    duplicate = await run_in_threadpool(duplicate_query.execute)
+    if duplicate.data:
+        raise HTTPException(
+            status_code=409,
+            detail=f"This exact file is already version {duplicate.data['version_number']}",
+        )
+
+    latest_query = (
+        db.table("document_versions")
+        .select("version_number")
+        .eq("document_id", str(document_id))
+        .order("version_number", desc=True)
+        .limit(1)
+    )
+    latest = await run_in_threadpool(latest_query.execute)
+    version_number = (
+        int(latest.data[0]["version_number"]) + 1 if latest.data else 1
+    )
+
+    filename = _safe_filename(file.filename, f"version-{version_number}")
+    storage_path = (
+        f"projects/{project_id}/documents/{document_id}/"
+        f"versions/v{version_number}/{filename}"
+    )
+
+    await run_in_threadpool(
+        db.storage.from_("documents").upload,
+        storage_path,
+        content,
+        {"content-type": file.content_type},
+    )
+
+    try:
+        version_query = db.table("document_versions").insert({
+            "document_id": str(document_id),
+            "project_id": str(project_id),
+            "version_number": version_number,
+            "storage_path": storage_path,
+            "original_filename": filename,
+            "mime_type": file.content_type,
+            "file_size": len(content),
+            "sha256": sha256,
+            "status": "pending",
+        })
+        version_res = await run_in_threadpool(version_query.execute)
+    except Exception:
+        try:
+            await run_in_threadpool(
+                db.storage.from_("documents").remove, [storage_path]
+            )
+        finally:
+            raise
+
+    version_id = version_res.data[0]["id"]
+
+    job_query = db.table("document_jobs").insert({
+        "project_id": str(project_id),
+        "document_id": str(document_id),
+        "document_version_id": version_id,
+        "job_type": "ingest",
+        "status": "queued",
+        "stage": "store",
+        "max_attempts": 3,
+    })
+    job_res = await run_in_threadpool(job_query.execute)
+    job_id = job_res.data[0]["id"]
+
+    from app.workers.ingest_worker import ingest_document
+
+    try:
+        await run_in_threadpool(
+            ingest_document.delay, str(document_id), version_id, job_id
+        )
+    except Exception as exc:
+        failure_query = db.table("document_jobs").update({
+            "status": "failed",
+            "last_error": f"Failed to dispatch ingest worker: {exc}",
+        }).eq("id", job_id)
+        await run_in_threadpool(failure_query.execute)
+        raise HTTPException(
+            status_code=503,
+            detail="Version uploaded but ingestion worker could not be queued",
+        ) from exc
+
+    return {
+        "document_id": str(document_id),
+        "version_id": version_id,
+        "version_number": version_number,
+        "job_id": job_id,
+    }
+
+
 @router.get("/projects/{project_id}/documents")
-async def list_documents(
+def list_documents(
     project_id: UUID,
     current_user: AuthenticatedUser = Depends(get_current_user),
 ) -> list[dict]:
@@ -129,8 +329,49 @@ async def list_documents(
     return res.data
 
 
+
+@router.get("/projects/{project_id}/documents/{document_id}")
+def get_document_detail(
+    project_id: UUID,
+    document_id: UUID,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+) -> dict:
+    db = get_supabase_admin()
+    _assert_member(db, str(project_id), current_user.user_id)
+
+    document = (
+        db.table("documents")
+        .select("*")
+        .eq("id", str(document_id))
+        .eq("project_id", str(project_id))
+        .neq("status", "deleting")
+        .maybe_single()
+        .execute()
+    )
+    if not document.data:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    versions = (
+        db.table("document_versions")
+        .select(
+            "id, version_number, original_filename, mime_type, file_size, "
+            "page_count, status, summary, summary_status, "
+            "embedding_model, chunker_version, created_at, processed_at"
+        )
+        .eq("document_id", str(document_id))
+        .eq("project_id", str(project_id))
+        .order("version_number", desc=True)
+        .execute()
+    )
+
+    return {
+        **document.data,
+        "versions": versions.data,
+    }
+
+
 @router.delete("/projects/{project_id}/documents/{document_id}", status_code=status.HTTP_202_ACCEPTED)
-async def delete_document(
+def delete_document(
     project_id: UUID,
     document_id: UUID,
     current_user: AuthenticatedUser = Depends(get_current_user),
@@ -138,6 +379,17 @@ async def delete_document(
     """Permanent deletion — returns 202 immediately, cleanup runs in background."""
     db = get_supabase_admin()
     _assert_owner(db, str(project_id), current_user.user_id)
+
+    document = (
+        db.table("documents")
+        .select("id")
+        .eq("id", str(document_id))
+        .eq("project_id", str(project_id))
+        .maybe_single()
+        .execute()
+    )
+    if not document.data:
+        raise HTTPException(status_code=404, detail="Document not found")
 
     # Check for existing delete job
     existing = (
@@ -156,10 +408,11 @@ async def delete_document(
     db.table("documents").update({
         "status": "deleting",
         "active_version_id": None,
-    }).eq("id", str(document_id)).execute()
+    }).eq("id", str(document_id)).eq("project_id", str(project_id)).execute()
 
     # Create delete job
     job_res = db.table("document_jobs").insert({
+        "project_id": str(project_id),
         "document_id": str(document_id),
         "job_type": "delete",
         "status": "queued",
@@ -168,18 +421,60 @@ async def delete_document(
     }).execute()
     job_id = job_res.data[0]["id"]
 
-    # TODO: dispatch Celery task: delete_document.delay(str(document_id), job_id)
+    from app.workers.delete_worker import delete_document as delete_document_task
+
+    try:
+        delete_document_task.delay(str(document_id), job_id)
+    except Exception as exc:
+        db.table("document_jobs").update({
+            "status": "failed",
+            "last_error": f"Failed to dispatch delete worker: {exc}",
+        }).eq("id", job_id).execute()
+        db.table("documents").update({
+            "status": "active",
+        }).eq("id", str(document_id)).execute()
+        raise HTTPException(
+            status_code=503,
+            detail="Document could not be queued for deletion",
+        ) from exc
 
     return {"job_id": job_id, "message": "Deletion queued"}
 
 
+
+@router.get("/projects/{project_id}/document-jobs")
+def list_project_document_jobs(
+    project_id: UUID,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+) -> list[dict]:
+    """List document processing jobs for a project, newest first."""
+    db = get_supabase_admin()
+    _assert_member(db, str(project_id), current_user.user_id)
+
+    res = (
+        db.table("document_jobs")
+        .select("*")
+        .eq("project_id", str(project_id))
+        .order("created_at", desc=True)
+        .limit(100)
+        .execute()
+    )
+    return res.data
+
+
 @router.get("/document-versions/{version_id}/signed-url")
-async def get_signed_url(
+def get_signed_url(
     version_id: UUID,
     current_user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict:
     db = get_supabase_admin()
-    ver = db.table("document_versions").select("storage_path, project_id").eq("id", str(version_id)).single().execute()
+    ver = (
+        db.table("document_versions")
+        .select("storage_path, project_id")
+        .eq("id", str(version_id))
+        .maybe_single()
+        .execute()
+    )
     if not ver.data:
         raise HTTPException(status_code=404, detail="Version not found")
 
