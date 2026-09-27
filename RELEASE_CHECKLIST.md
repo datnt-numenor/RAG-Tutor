@@ -1,5 +1,7 @@
 # RAGTutor Release Validation
 
+> **Cập nhật trạng thái (2026-09-27):** Danh sách này ghi lại lần phát hành Railway trước. Hệ thống đầy đủ trên môi trường vận hành hiện ngoại tuyến; chỉ bản demo trên Vercel đang được công khai. Các mục đã đánh dấu không có nghĩa là dịch vụ Railway vẫn đang chạy. Xem [`README.md`](README.md) để biết trạng thái hiện tại.
+
 This file tracks release gates that require a real runtime rather than code inspection alone.
 
 ## Automated in CI

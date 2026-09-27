@@ -1,5 +1,7 @@
 # Production Deployment
 
+> **Cập nhật trạng thái (2026-09-27):** Tài liệu bên dưới ghi lại cấu hình và quy trình của lần triển khai Railway trước. Các dịch vụ Railway gồm giao diện, API, tiến trình Celery và Redis hiện đã dừng; phần đang hoạt động công khai chỉ là [bản demo trên Vercel](https://frontend-psi-dusky-79.vercel.app/demo). Xem [`README.md`](README.md) để biết trạng thái hiện tại.
+
 RAGTutor is code-complete enough for release validation. Production deployment is intentionally split into two phases so no service is launched with missing secrets.
 
 ## Current infrastructure

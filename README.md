@@ -1,454 +1,192 @@
-# RAGTutor — AI Study Assistant
+# RAGTutor
 
-RAGTutor là AI Study Assistant multi-user: người dùng tạo project, upload PDF/DOCX, hỏi đáp bằng RAG có citation, đọc/annotate PDF, tạo roadmap học, làm quiz, chấm tự luận và nộp bài bằng ảnh scan.
+RAGTutor là trợ lý học tập dùng kỹ thuật sinh nội dung có tăng cường truy xuất (RAG) để biến tài liệu PDF/DOCX thành không gian hỏi đáp có trích dẫn, bài kiểm tra, lộ trình học và báo cáo tiến độ.
 
-> Trạng thái hiện tại: phần lớn MVP đã được implement trong code và schema production. Vẫn cần chạy full local E2E + CI/deployment validation trước khi coi là release ổn định.
+[Xem bản demo](https://frontend-psi-dusky-79.vercel.app/demo) · [Mã nguồn](https://github.com/datnt-numenor/RAG-Tutor)
+
+> **Trạng thái triển khai:** `/demo` là bản mô phỏng chạy hoàn toàn trong trình duyệt, không cần tài khoản và không gọi máy chủ hoặc AI. Máy chủ, tiến trình Celery và Redis trên môi trường vận hành hiện không được duy trì trực tuyến để tránh chi phí. Các chức năng đầy đủ bên dưới cần chạy trên máy cá nhân hoặc triển khai lại hạ tầng.
+
+<p align="center">
+  <img src="./demo-mobile.png" alt="Bản demo RAGTutor trên thiết bị di động" width="360" />
+</p>
+
+## Chức năng
+
+| Nhóm | Khả năng | Bản demo công khai | Hệ thống đầy đủ |
+|---|---|:---:|:---:|
+| Tài liệu | Tải lên PDF/DOCX, quản lý phiên bản, xử lý nền | Mô phỏng | Có |
+| Hỏi đáp RAG | Truy xuất theo dự án, trả lời kèm tài liệu và trang nguồn | Mô phỏng | Có |
+| PDF | Đọc tài liệu, chọn văn bản, đánh dấu và ghi chú | Một phần | Có |
+| Bài kiểm tra | Câu hỏi trắc nghiệm/tự luận, chấm điểm, ôn tập ngắt quãng | Mô phỏng | Có |
+| OCR | Nhận dạng bài làm ảnh, cho sửa trước khi chấm | Không | Có |
+| Lộ trình | Sinh chủ đề, quan hệ tiên quyết và lịch học | Mô phỏng | Có |
+| Tiến độ | Tổng hợp hoạt động, bài kiểm tra và lịch học | Mô phỏng | Có |
+| Cộng tác | Thành viên dự án, lời mời và phân quyền | Không | Có |
 
 ## Kiến trúc
 
-```text
-Next.js App Router
-        │
-        │ REST / multipart + Supabase JWT
-        ▼
-FastAPI
- ├─ Supabase Auth/JWKS authorization
- ├─ RAG / Gemini
- ├─ Quiz / OCR / Roadmap
- ├─ Supabase Postgres + pgvector
- ├─ Supabase private Storage
- └─ Redis + Celery workers
+```mermaid
+flowchart LR
+    UI[Next.js 16 / React 19] -->|Supabase JWT + REST| API[FastAPI]
+    API --> DB[(Supabase Postgres + pgvector)]
+    API --> STORAGE[Supabase Storage]
+    API --> REDIS[(Redis)]
+    REDIS --> WORKER[Tiến trình Celery]
+    WORKER --> DB
+    API --> AI[Groq / Gemini]
+    WORKER --> AI
+    API --> OCR[Azure Vision tùy chọn]
 ```
 
-## Tech stack
-
-| Layer | Tech |
-|---|---|
-| Frontend | Next.js 16, React 19, TypeScript, Tailwind CSS 4, TanStack Query |
-| Backend | FastAPI, Python 3.12+ |
-| Auth | Supabase Auth, ES256/RS256 JWT verification via JWKS |
-| Database | Supabase PostgreSQL |
-| Vector search | pgvector 384-dim, cosine similarity, HNSW |
-| Storage | Supabase private buckets |
-| Embedding | sentence-transformers `paraphrase-multilingual-MiniLM-L12-v2` |
-| LLM / Vision | Groq + Azure Vision with automatic Gemini fallback |
-| Jobs | Celery + Redis |
-| PDF | pdfplumber ingest + pdfjs-dist viewer |
-| ORM schema | Prisma Client Python schema retained for relational model documentation/tooling |
-
-## Implemented MVP flows
-
-### Auth & project isolation
-
-- Supabase email/password authentication.
-- FastAPI verifies Supabase JWT through JWKS.
-- Project owner/member roles.
-- Production RLS policies protect direct Supabase access as well as FastAPI authorization.
-- Invitation tokens are stored only as SHA-256 hashes and accepted transactionally.
-- Private RLS helper functions are not exposed through public RPC.
-
-### Documents & retrieval
+Luồng nhập tài liệu chính:
 
 ```text
-Upload PDF/DOCX
-→ private Storage
-→ document/version/job
-→ Celery
-→ extract
-→ Vietnamese-aware token chunking
-→ batch embedding
-→ pgvector
-→ active version
+PDF/DOCX → kho lưu trữ riêng tư → Celery → trích xuất → chia đoạn → tạo vector → pgvector
 ```
 
-The custom chunker:
+## Công nghệ
 
-- detects headings/paragraphs;
-- protects common Vietnamese abbreviations and decimal boundaries;
-- splits sentence → clause → word fallback;
-- counts tokens with the actual embedding tokenizer;
-- never intentionally exceeds model sequence length;
-- adds sentence overlap;
-- stores page, section, token count and source spans.
+- Giao diện: Next.js 16, React 19, TypeScript, Tailwind CSS 4, TanStack Query.
+- Máy chủ: Python 3.12, FastAPI, Pydantic, Celery.
+- Dữ liệu và xác thực: Supabase Auth, PostgreSQL, pgvector, kho lưu trữ riêng tư và RLS.
+- AI: Groq tạo văn bản khi có cấu hình, Gemini là phương án dự phòng; Azure Vision hỗ trợ OCR tùy chọn.
+- Truy xuất: `paraphrase-multilingual-MiniLM-L12-v2`, vector 384 chiều.
+- Hạ tầng: Redis, Docker Compose, GitHub Actions, Vercel.
 
-Document versions are immutable. Uploading a new version creates a new ingest job and supersedes the old active version only after the new one becomes ready.
-
-Permanent delete immediately removes the document from retrieval, then asynchronously:
-
-- cancels ingest jobs;
-- removes Storage objects;
-- deletes vectors/chunks;
-- marks historical chat citations as `source_deleted`;
-- retires questions that no longer have sources;
-- removes orphaned active roadmap topics;
-- preserves chat and quiz attempt snapshots.
-
-### RAG chat
-
-- Project-scoped multi-document retrieval.
-- `match_chunks` filters active document/version at SQL level.
-- Similarity threshold + top-k.
-- Gemini only runs if retrieval has evidence.
-- Otherwise returns `insufficient_evidence`.
-- Assistant messages persist model, prompt version, retrieval parameters and citations.
-- Redis-backed user quotas protect AI endpoints.
-- Request IDs and privacy-safe structured request logs are enabled.
-
-### PDF viewer & annotations
-
-- Signed URL to private document version.
-- PDF.js viewer with page navigation and zoom.
-- Rectangle highlight coordinates normalized to `0..1`.
-- PDF.js text layer supports direct text selection/highlight.
-- Text selection is stored as one or more normalized rectangles, so highlight placement survives zoom/resize.
-- Color + note CRUD.
-- Annotation belongs to one user and one immutable document version.
-
-### Roadmap & schedules
-
-- Gemini extracts topics from active chunks.
-- Topic source chunks and prerequisite graph are stored.
-- Topological prerequisite ordering.
-- Target score, exam date and study minutes/week affect schedule depth and duration.
-- Schedule is generated in the user's configured timezone and stored in UTC.
-- Suggested/accepted/rejected schedule states.
-- Completion is stored separately for each user.
-
-### Quiz & spaced review
-
-Owner can generate the shared question bank; members start quizzes from that bank.
-
-Question generation:
-
-- MCQ and essay;
-- each question must reference real source chunks;
-- optional mapping to roadmap topic;
-- 384-dim question embedding;
-- semantic deduplication against old + newly generated questions;
-- model/prompt version persisted.
-
-Grading:
-
-- MCQ: exact rule-based grading;
-- essay: Gemini grades against key points/rubric **and source evidence**;
-- review state updates after grading.
-
-### Handwritten/image answer flow
+## Cấu trúc kho mã nguồn
 
 ```text
-JPEG / PNG / WebP
-→ magic-byte validation
-→ private Storage
-→ Gemini Vision OCR
-→ raw OCR + uncertain regions
-→ user edits/confirms
-→ essay grading
-```
-
-The system never grades OCR text before user confirmation. The image can later be deleted while keeping confirmed text and grading history.
-
-### Progress
-
-- Dashboard aggregates actual project/document/chat/quiz/review data.
-- `study_events` stores idempotent activity events.
-- `progress_snapshots` stores rebuildable daily aggregates per user/project.
-- Schedule completion and graded quiz attempts feed the progress pipeline.
-- Snapshot history can be rebuilt for a date range instead of trusting mutable counters.
-
-## Security state
-
-Supabase Security Advisor currently has no table/RLS/pgvector exposure warning. The remaining account-level warning is **Leaked Password Protection Disabled**.
-
-For local development, email confirmation was deliberately disabled earlier. Before public deployment:
-
-1. enable email confirmation;
-2. enable leaked-password protection if available on the chosen Supabase plan;
-3. rerun authorization integration tests.
-
-## Project structure
-
-```text
-RAG-Tutor/
+RAGTutor/
 ├── backend/
-│   ├── app/
-│   │   ├── api/v1/endpoints/
-│   │   ├── core/
-│   │   ├── services/
-│   │   └── workers/
-│   ├── evaluation/
-│   ├── migrations/
-│   ├── prisma/
-│   ├── tests/
-│   ├── Dockerfile
-│   └── main.py
+│   ├── app/api/v1/       # Các điểm cuối FastAPI
+│   ├── app/services/     # RAG, nhập liệu, bài kiểm tra, OCR, lộ trình
+│   ├── app/workers/      # Các tác vụ Celery
+│   ├── migrations/       # Lược đồ SQL, pgvector và RLS
+│   ├── scripts/          # Kiểm thử đầu-cuối và bảo mật
+│   └── tests/            # Kiểm thử tự động
 ├── frontend/
-│   ├── src/app/
-│   ├── src/components/
-│   ├── src/lib/
-│   ├── src/providers/
-│   └── Dockerfile
-├── .github/workflows/ci.yml
-├── docker-compose.yml
-├── render.yaml
-├── Plan.md
-└── Database_design_plan.md
+│   └── src/
+│       ├── app/          # Bộ định tuyến ứng dụng Next.js
+│       ├── components/
+│       └── lib/
+├── .github/workflows/    # Tích hợp liên tục và kiểm thử đầu-cuối
+└── docker-compose.yml
 ```
 
-## Local development
+## Chạy nhanh bản demo
 
-### 1. Environment
-
-Backend:
+Yêu cầu Node.js 22 và npm.
 
 ```powershell
-cd "D:\Personal Project\RAGTutor\backend"
-..\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+Set-Location frontend
+npm.cmd ci
+npm.cmd run dev
 ```
 
-Copy:
+Mở `http://localhost:3000/demo`. Đường dẫn này dùng dữ liệu mẫu và không cần tệp môi trường.
 
-```text
-backend/.env.example → backend/.env
-frontend/.env.example → frontend/.env.local
-```
+## Chạy toàn bộ hệ thống trên máy cá nhân
 
-Never commit service-role keys, database passwords or Gemini keys.
+### 1. Yêu cầu
 
-### 2. Redis
+- Python 3.12;
+- Node.js 22;
+- Docker Desktop hoặc một dịch vụ Redis;
+- một dự án Supabase đã áp dụng các tệp SQL trong `backend/migrations/` theo thứ tự tên;
+- khóa API Gemini; Groq và Azure Vision là tùy chọn.
 
-With Docker:
+### 2. Tạo môi trường
+
+Chạy từ thư mục gốc của kho mã nguồn:
 
 ```powershell
-docker run --name ragtutor-redis -p 6379:6379 -d redis:7-alpine
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
+
+Copy-Item backend\.env.example backend\.env
+Copy-Item frontend\.env.example frontend\.env.local
 ```
 
-### 3. Celery
+Điền các giá trị mẫu trong hai tệp vừa tạo. Không đưa `.env`, mật khẩu cơ sở dữ liệu, khóa API hoặc khóa `service_role` của Supabase lên Git.
 
-Windows local:
+Các biến máy chủ bắt buộc được mô tả trong `backend/.env.example`. Ba biến công khai của giao diện nằm trong `frontend/.env.example`.
+
+### 3. Khởi động các dịch vụ
+
+Redis:
 
 ```powershell
-cd backend
-celery -A app.workers.celery_app.celery_app worker --loglevel=info --pool=solo
+docker compose up -d redis
 ```
 
-### 4. Backend
+FastAPI:
 
 ```powershell
-cd backend
-uvicorn main:app --reload
+.\.venv\Scripts\python.exe -m uvicorn main:app --app-dir backend --reload
 ```
 
-Development Swagger:
-
-```text
-http://127.0.0.1:8000/docs
-```
-
-### 5. Frontend
+Tiến trình Celery trong một cửa sổ lệnh khác:
 
 ```powershell
-cd frontend
-npm ci
-npm run dev
+Set-Location backend
+..\.venv\Scripts\python.exe -m celery -A app.workers.celery_app.celery_app worker --loglevel=info --pool=solo
 ```
 
-Open:
-
-```text
-http://localhost:3000
-```
-
-## Docker Compose
-
-After filling `backend/.env` and exporting frontend public Supabase variables:
-
-```bash
-docker compose up --build
-```
-
-Services:
-
-- frontend: 3000
-- API: 8000
-- Redis: 6379
-- Celery worker
-
-## Tests
-
-Backend core tests:
-
-```bash
-cd backend
-pytest -q
-```
-
-Frontend:
-
-```bash
-cd frontend
-npm run lint
-npm run build
-```
-
-GitHub Actions CI is defined in `.github/workflows/ci.yml`. It compiles/tests the backend, runs `npm audit --audit-level=high`, lints the frontend and performs a production Next.js build.
-
-## End-to-end smoke test
-
-Sau khi Redis, Celery worker và FastAPI đang chạy, có thể kiểm tra toàn bộ vertical slice bằng một lệnh. Script tự tạo một DOCX tạm chứa kiến thức Transformer, upload, chờ ingest và hỏi một câu RAG có citation.
-
-PowerShell:
+Giao diện trong một cửa sổ lệnh khác:
 
 ```powershell
-cd backend
-$env:RAGTUTOR_TEST_EMAIL="your-test-account@example.com"
-$env:RAGTUTOR_TEST_PASSWORD="<local-test-password>"
-python scripts/smoke_e2e.py
+Set-Location frontend
+npm.cmd ci
+npm.cmd run dev
 ```
 
-Hoặc truyền tham số trực tiếp:
+Sau đó mở:
 
-```bash
-python scripts/smoke_e2e.py \
-  --email your-test-account@example.com \
-  --password '<password>' \
-  --base-url http://127.0.0.1:8000/api/v1 \
-  --timeout 180
-```
+- Trang web: `http://localhost:3000`
+- Swagger: `http://127.0.0.1:8000/docs`
+- Trạng thái API: `http://127.0.0.1:8000/health`
+- Mức sẵn sàng của các dịch vụ phụ thuộc: `http://127.0.0.1:8000/health/ready`
 
-Flow được kiểm tra:
+## Kiểm thử
 
-```text
-sign in
-→ /auth/me
-→ create project
-→ generate temporary DOCX
-→ upload document
-→ Celery ingest polling
-→ active version = ready
-→ create chat session
-→ RAG question
-→ grounded answer contains Query/Key/Value
-→ at least one citation
-```
-
-Không commit test password hoặc access token vào repository.
-
-## Multi-user authorization smoke test
-
-Dùng **hai tài khoản test khác nhau** để kiểm tra project isolation, invitation và revoke quyền sau khi remove member:
+Máy chủ:
 
 ```powershell
-cd backend
-
-$env:RAGTUTOR_OWNER_EMAIL="owner-test@example.com"
-$env:RAGTUTOR_OWNER_PASSWORD="<password>"
-$env:RAGTUTOR_MEMBER_EMAIL="member-test@example.com"
-$env:RAGTUTOR_MEMBER_PASSWORD="<password>"
-
-# Optional: bật thêm direct Supabase RLS verification
-$env:SUPABASE_URL="https://<project-ref>.supabase.co"
-$env:SUPABASE_ANON_KEY="<anon-key>"
-
-python scripts/security_e2e.py
+.\.venv\Scripts\python.exe -m pytest backend\tests -q --basetemp=backend\.pytest-tmp -p no:cacheprovider
 ```
 
-Script kiểm tra:
+Giao diện:
 
-```text
-Account A creates Project A
-Account B creates Project B
-→ A cannot read B
-→ B cannot read A
-→ A invites B
-→ B accepts
-→ B can read A
-→ B cannot upload/manage invitations
-→ A removes B
-→ B immediately loses project access
-→ B cannot reopen old chat session
-→ optional direct Supabase REST confirms the same RLS isolation
+```powershell
+Set-Location frontend
+npm.cmd run lint
+npm.cmd run build
 ```
 
-Không dùng tài khoản production thật cho smoke test vì script tạo temporary projects.
+Các bài kiểm thử đầu-cuối trong `backend/scripts/` cần máy chủ, Redis, tiến trình Celery, Supabase và tài khoản kiểm thử riêng. Không dùng tài khoản hoặc dữ liệu thật cho các tập lệnh này.
 
-## RAG evaluation
+## Biến môi trường và bảo mật
 
-Create a fixed JSONL dataset such as:
+- `SUPABASE_SERVICE_KEY`, mật khẩu cơ sở dữ liệu và các khóa AI chỉ được đặt ở máy chủ hoặc kho bí mật của nhà cung cấp lưu trữ.
+- Giao diện chỉ nhận các biến bắt đầu bằng `NEXT_PUBLIC_`; khóa công khai/ẩn danh của Supabase không thay thế cho RLS.
+- Bật RLS cho mọi bảng công khai và kiểm tra chính sách cho từng vai trò trước khi triển khai.
+- Kho lưu trữ chứa tài liệu phải ở chế độ riêng tư; trình khách lấy tệp qua đường dẫn ký số có thời hạn.
+- Không đưa mã truy cập, trạng thái đăng nhập của Playwright, nhật ký hoặc ảnh kiểm thử tạm lên Git.
 
-```json
-{"question":"Attention dùng các vector nào?","expected_document":"transformer.pdf","expected_page":2,"answer_keywords":["query","key","value"],"should_abstain":false}
-{"question":"Thông tin hoàn toàn không có trong tài liệu?","should_abstain":true}
-```
+## Triển khai
 
-Run:
+- Bản demo hồ sơ năng lực hiện được triển khai trực tiếp trên Vercel.
+- Hệ thống đầy đủ cần bốn thành phần: giao diện, FastAPI API, tiến trình Celery và Redis; Supabase cung cấp xác thực, Postgres/pgvector và lưu trữ tệp.
+- `frontend/vercel.json`, các `Dockerfile`, `docker-compose.yml` và `render.yaml` là cấu hình triển khai tham khảo.
+- Sau khi triển khai lại, cập nhật `NEXT_PUBLIC_API_BASE_URL`, `ALLOWED_ORIGINS` và chạy kiểm thử đầu-cuối cơ bản trước khi công bố đường dẫn.
 
-```bash
-cd backend
-python -m evaluation.run_rag_eval \
-  --project-id <PROJECT_UUID> \
-  --dataset evaluation/my_eval.jsonl \
-  --output evaluation/result.json
-```
+## Giới hạn hiện tại
 
-Metrics:
+- Bản demo công khai dùng dữ liệu mô phỏng; không chứng minh kết nối vận hành thật với AI hoặc cơ sở dữ liệu.
+- Chưa công bố bộ đánh giá cố định cho độ chính xác truy xuất, OCR, chấm tự luận hoặc độ trễ.
+- Hệ thống đầy đủ trên môi trường vận hành hiện ngoại tuyến, vì vậy các trang đăng nhập và bảng điều khiển thật không hoạt động trên bản demo.
 
-- retrieval hit rate;
-- citation hit rate;
-- abstain accuracy;
-- keyword coverage;
-- median retrieval latency;
-- median end-to-end latency.
+## Giấy phép
 
-Do not claim CV metrics until they have been measured on a fixed test set.
-
-## Main API groups
-
-```text
-/auth
-/projects
-/documents
-/document-jobs
-/chat
-/quiz
-/annotations
-/roadmap
-/schedules
-/progress
-/invitations
-```
-
-Full API reference is available through Swagger in non-production mode.
-
-## Deploy
-
-- `render.yaml` provisions the FastAPI web service and Celery worker blueprint.
-- The API can use Render free web compute, but Render Background Worker compute is paid; the current `starter` worker is therefore not a zero-cost deployment.
-- Backend requirements pin the official CPU-only PyTorch wheel so CI/Render do not pull CUDA/NVIDIA runtimes.
-- `frontend/vercel.json` contains the Vercel Next.js build configuration.
-- Redis remains an external deployment dependency and is supplied through `REDIS_URL`.
-- Production secrets are configured in the hosting provider, never committed to Git.
-
-## Known remaining release work
-
-- run full E2E on a real local/deployed environment with Redis/Celery/PDF/Gemini;
-- add multi-user authorization integration tests using two independent accounts;
-- run the fixed RAG benchmark and record real metrics;
-- enable production Supabase Auth email confirmation and leaked-password protection where available;
-- deploy API/worker/frontend and run post-deploy smoke tests.
-
-
-## Production deployment
-
-Production is deployed on Railway:
-
-- Web: `https://rag-tutor-web-production.up.railway.app`
-- API: `https://rag-tutor-api-production.up.railway.app`
-- Health: `/health`
-- Readiness: `/health/ready`
-- Celery worker: Railway private service
-- Redis: Railway private service
-
-The Railway API deployment is validated with `/health/ready`, which checks both Supabase and Redis connectivity. The Celery worker is connected to `redis.railway.internal` and reports ready.
-
-The frontend runs from the `frontend/` Dockerfile and talks to the Railway API over HTTPS. See `DEPLOYMENT.md` and `RELEASE_CHECKLIST.md` for the latest release state.
+Kho mã nguồn hiện chưa có tệp giấy phép. Mã nguồn không mặc nhiên được cấp quyền sử dụng lại cho đến khi một giấy phép được bổ sung.
